@@ -269,34 +269,62 @@ async def node_research(state: Dict[str, Any], config: RunnableConfig) -> Dict[s
 async def node_profit(state: Dict[str, Any], config: RunnableConfig) -> Dict[str, Any]:
     rec = recorder_from_config(config)
     t0 = time.perf_counter()
+    task_input = state["task_input"]
+    marketplace = (task_input.get("marketplaces") or ["amazon"])[0]
+    repo = _tool_repo(config)
+    ctx = _tool_ctx(state)
 
-    # 确定性计算（不由 LLM 在文本里算，PRD §7.3）。M2 换成 estimate_landed_cost 等工具的真实输出。
-    revenue = 29.99
-    landed_cost = 9.80
-    platform_fee = 4.50
-    fulfillment = 4.50
-    ads = 3.00
-    total_cost = round(landed_cost + platform_fee + fulfillment + ads, 2)
-    contribution = round(revenue - total_cost, 2)
-    margin = round(contribution / revenue, 4)
-    profit = {
-        "assumptions": {
-            "sale_price": revenue,
-            "landed_cost": landed_cost,
-            "platform_fee": platform_fee,
-            "fulfillment": fulfillment,
-            "ads_budget": ads,
-            "return_rate": 0.04,
-        },
-        "contribution_profit": contribution,
-        "margin_pct": margin,
-        "break_even_price": round(total_cost / (1 - 0.15), 2),
-        "sensitivity": {"ads+1usd": "-3.3pp margin", "return_rate x2": "-4.1pp margin"},
-    }
+    via = "fallback"
+    try:
+        # M3：确定性商业计算进治理管线（PRD §7.3）——佣金率取自 adapter 规则，
+        # 节点不做算术；售价/采购价为 demo 固定输入，其余参数走工具默认值。
+        res = await execute_tool(
+            "estimate_profit",
+            {"marketplace": marketplace, "sale_price_usd": 29.99, "supplier_price_usd": 6.80},
+            ctx,
+            repo,
+        )
+        o = res.output or {}
+        margin = float(o.get("margin_pct") or 0.0)
+        contribution = float(o.get("contribution_profit_usd") or 0.0)
+        profit = {
+            "assumptions": o.get("assumptions") or {},
+            "contribution_profit": contribution,
+            "margin_pct": margin,
+            "platform_fee_pct": o.get("platform_fee_pct"),
+            "break_even_price_usd": o.get("break_even_price_usd"),
+            "total_cost_usd": o.get("total_cost_usd"),
+        }
+        via = "tool"
+    except ToolError:  # 工具故障降级为旧 stub 数字，主链路不中断
+        logger.exception("estimate_profit failed; falling back to hardcoded numbers")
+        revenue = 29.99
+        landed_cost = 9.80
+        platform_fee = 4.50
+        fulfillment = 4.50
+        ads = 3.00
+        total_cost = round(landed_cost + platform_fee + fulfillment + ads, 2)
+        contribution = round(revenue - total_cost, 2)
+        margin = round(contribution / revenue, 4)
+        profit = {
+            "assumptions": {
+                "sale_price": revenue,
+                "landed_cost": landed_cost,
+                "platform_fee": platform_fee,
+                "fulfillment": fulfillment,
+                "ads_budget": ads,
+                "return_rate": 0.04,
+            },
+            "contribution_profit": contribution,
+            "margin_pct": margin,
+            "break_even_price": round(total_cost / (1 - 0.15), 2),
+            "sensitivity": {"ads+1usd": "-3.3pp margin", "return_rate x2": "-4.1pp margin"},
+        }
+
     await rec.status(WorkflowStatus.analyzing_profit.value)
     await rec.step(
         "profit",
-        detail={"margin_pct": margin, "contribution": contribution},
+        detail={"margin_pct": margin, "contribution": contribution, "via": via},
         latency_ms=int((time.perf_counter() - t0) * 1000),
     )
     return {"profit": profit}
@@ -305,38 +333,62 @@ async def node_profit(state: Dict[str, Any], config: RunnableConfig) -> Dict[str
 async def node_supplier(state: Dict[str, Any], config: RunnableConfig) -> Dict[str, Any]:
     rec = recorder_from_config(config)
     t0 = time.perf_counter()
+    task_input = state["task_input"]
+    idea = str(task_input.get("product_idea") or "Foldable Under-Bed Storage Box")
+    repo = _tool_repo(config)
+    ctx = _tool_ctx(state)
 
-    # M4 接缝：memory_hit 将由 retrieve_memory 实时检索供应商风险记忆；
-    # 此处为 seed 数据，演示"历史高风险供应商自动降权"的展示形态。
-    candidates: List[Dict[str, Any]] = [
-        {
-            "id": "sup_001",
-            "name": "Ningbo Foldable Factory",
-            "price_usd": 6.80,
-            "moq": 500,
-            "lead_time_days": 25,
-            "quality_score": 86,
-            "risk": "low",
-        },
-        {
-            "id": "sup_002",
-            "name": "Yiwu General Trading",
-            "price_usd": 5.90,
-            "moq": 300,
-            "lead_time_days": 35,
-            "quality_score": 41,
-            "risk": "high",
-            "memory_hit": {
-                "source_workflow_id": "wf_seed_2026_07",
-                "reason": "历史缺陷率 12% 超标被标记",
+    try:
+        res = await execute_tool("search_suppliers", {"keyword": idea}, ctx, repo)
+        candidates: List[Dict[str, Any]] = [
+            dict(c) for c in ((res.output or {}).get("candidates") or [])
+        ]
+    except ToolError:
+        # M4 接缝：memory_hit 将由 retrieve_memory 实时检索供应商风险记忆；
+        # 此处为 seed 数据，演示"历史高风险供应商自动降权"的展示形态。
+        logger.exception("search_suppliers failed; falling back to seed catalog")
+        candidates = [
+            {
+                "id": "sup_001",
+                "name": "Ningbo Foldable Factory",
+                "price_usd": 6.80,
+                "moq": 500,
+                "lead_time_days": 25,
+                "quality_score": 86,
+                "risk": "low",
             },
-        },
-    ]
+            {
+                "id": "sup_002",
+                "name": "Yiwu General Trading",
+                "price_usd": 5.90,
+                "moq": 300,
+                "lead_time_days": 35,
+                "quality_score": 41,
+                "risk": "high",
+                "memory_hit": {
+                    "source_workflow_id": "wf_seed_2026_07",
+                    "reason": "历史缺陷率 12% 超标被标记",
+                },
+            },
+        ]
+
+    # 选择逻辑留在确定性代码里（PRD §7.3）：低风险优先；同风险按质检分降序、报价升序
+    low_risk = sorted(
+        (c for c in candidates if c.get("risk") == "low"),
+        key=lambda c: (-int(c.get("quality_score") or 0), float(c.get("price_usd") or 0)),
+    )
+    primary = None
+    if low_risk:
+        primary = low_risk[0]["id"]
+    elif candidates:
+        primary = candidates[0]["id"]  # 全员高风险时只能取目录第一个并如实暴露风险
+    backup = low_risk[1]["id"] if len(low_risk) > 1 else None
+    risk_flags = [f"{c['id']} 已按历史风险记忆降权" for c in candidates if c.get("memory_hit")]
     suppliers = {
-        "primary": "sup_001",
-        "backup": None,
-        "candidates": candidates,
-        "risk_flags": ["sup_002 已按历史风险记忆降权"],
+        "primary": primary,
+        "backup": backup,
+        "candidates": candidates,  # 目录原序保留，排序只影响选择不影响展示
+        "risk_flags": risk_flags,
     }
     await rec.status(WorkflowStatus.evaluating_suppliers.value)
     await rec.step(
@@ -566,6 +618,26 @@ async def node_listing(state: Dict[str, Any], config: RunnableConfig) -> Dict[st
         if tmax and len(title) > int(tmax):
             title = title[: int(tmax)]
 
+        # M3：ImageSpec 规则经工具从 adapter 取得，结构化 brief 直接进草稿；
+        # 真实出图仍是 Phase 2 接缝（v1.4 §1.1），MVP 只出文字 brief
+        image_brief: Dict[str, Any] = {
+            "main": "白底主图：展开态45°角",
+            "scene": "床底推入场景",
+            "infographic": "尺寸对比与承重标注",
+        }
+        try:
+            res = await execute_tool(
+                "generate_image_brief",
+                {"marketplace": mp, "product_idea": idea, "listing_title": title},
+                ctx,
+                repo,
+            )
+            if res.output:
+                image_brief = res.output  # 前端只做 JSON 展示，保留工具的新键即可
+        except ToolError as exc:  # 工具故障降级为硬编码三键 brief，主链路不中断
+            logger.exception("generate_image_brief failed for %s; fallback stub", mp)
+            rules_fetched[f"{mp}_image_brief"] = {"error": str(exc)}
+
         drafts.append(
             {
                 "marketplace": mp,
@@ -573,11 +645,7 @@ async def node_listing(state: Dict[str, Any], config: RunnableConfig) -> Dict[st
                 "bullets": bullets,
                 "claim": claim,
                 "keywords": keywords,
-                "image_brief": {
-                    "main": "白底主图：展开态45°角",
-                    "scene": "床底推入场景",
-                    "infographic": "尺寸对比与承重标注",
-                },  # 生图为 Phase 2 接缝（v1.4 §1.1），MVP 只出文字 brief
+                "image_brief": image_brief,
             }
         )
     await rec.status(WorkflowStatus.drafting_listings.value)
@@ -602,16 +670,77 @@ async def node_listing(state: Dict[str, Any], config: RunnableConfig) -> Dict[st
     return update
 
 
+CRITIC_SYSTEM_PROMPT = """你是跨境电商 Listing 合规与质量审查官。
+输入是各平台 Listing 草稿 JSON 与研究痛点证据。只输出一个 JSON 对象，schema：
+{"issues": [{"marketplace": "平台", "field": "title|bullets|claim",
+             "issue": "问题描述(中文)", "severity": "high|medium", "rule": "违反的规则"}],
+ "reasoning": "审查理由(中文,≤100字)"}
+
+审查 rubric（必须遵守）：
+- 只有硬违规才报 severity="high"：
+  (a) 绝对化/不可证实承诺——100%、永不、保证、零/完全无 X 之类的绝对表述（中英文都算），
+      即使它是在回应某个品类痛点也违规，正确写法是留有余量的可证实表述
+      （如 odor-free→low-odor、never sags→holds up to 30kg）；
+  (b) 与本品自身研究事实直接矛盾的宣称（注意：品类差评点≠本品矛盾——
+      针对品类痛点给出解决方案型卖点恰是正当营销，不要报）；
+- sturdy/durable/heavy-duty/reinforced 等常规卖点词是可接受的行业修辞，不要报；
+- 风格润色类建议最多 severity="medium"（medium 只记录、不触发重写）；
+- 不臆造证据里不存在的问题；每条 issue 用 field 精确定位到 title/bullets/claim。"""
+
+
+async def _critic_via_llm(
+    state: Dict[str, Any], config: RunnableConfig
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """LLM 审查路径：确定性违禁词扫描之外的语义层补漏；解析异常向上抛由调用方降级。
+
+    数据全部来自 state（listings + research_brief），不新发工具调用——审查只读不写。
+    """
+    brief = (_sp(state).get("artifacts") or {}).get("research_brief") or {}
+    slim_listings = [
+        {
+            "marketplace": d.get("marketplace"),
+            "title": d.get("title"),
+            "bullets": d.get("bullets"),
+            "claim": d.get("claim"),
+        }
+        for d in (state.get("listings") or [])
+    ]
+    evidence: Dict[str, Any] = {"review_pain_points": brief.get("review_pain_points")}
+    comp = (brief.get("tool_outputs") or {}).get("search_competitor_listings")
+    if comp and not comp.get("error"):
+        evidence["competitor_listings"] = comp
+
+    parsed, usage = await _call_llm_json(
+        CRITIC_SYSTEM_PROMPT,
+        json.dumps({"listings": slim_listings, "evidence": evidence}, ensure_ascii=False),
+    )
+    # 硬保证：severity 只出 high/medium（与 research 的分数封顶同思路，不信任生成端自觉）
+    issues = [
+        {
+            "marketplace": str(i.get("marketplace", "")),
+            "field": str(i.get("field", "")),
+            "issue": str(i.get("issue", ""))[:200],
+            "severity": "high" if i.get("severity") == "high" else "medium",
+            "rule": str(i.get("rule", "")),
+        }
+        for i in (parsed.get("issues") or [])
+        if isinstance(i, dict)
+    ][:20]
+    return issues, usage
+
+
 async def node_critic(state: Dict[str, Any], config: RunnableConfig) -> Dict[str, Any]:
     rec = recorder_from_config(config)
     t0 = time.perf_counter()
-    issues: List[Dict[str, Any]] = []
+
+    # 第一层：确定性违禁词扫描（零成本、结果稳定，先跑）
+    det_issues: List[Dict[str, Any]] = []
     for d in state.get("listings") or []:
         for field in ("title", "claim"):
             text = str(d.get(field) or "")
             for phrase in BANNED_CLAIM_PHRASES:
                 if phrase in text:
-                    issues.append(
+                    det_issues.append(
                         {
                             "marketplace": d.get("marketplace"),
                             "field": field,
@@ -621,40 +750,75 @@ async def node_critic(state: Dict[str, Any], config: RunnableConfig) -> Dict[str
                         }
                     )
 
-    if issues:
+    # 第二层：LLM 语义审查补漏；失败只降级为纯确定性扫描，主链路不中断
+    engine = "deterministic"
+    usage: Dict[str, Any] | None = None
+    llm_issues: List[Dict[str, Any]] = []
+    if llm_enabled():
+        try:
+            llm_issues, usage = await _critic_via_llm(state, config)
+            engine = "llm"
+        except Exception:  # noqa: BLE001 —— 与 research 同款降级语义
+            logger.exception("critic llm path failed; falling back to deterministic")
+            usage = None
+
+    issues = det_issues + llm_issues
+    # 重写只由硬违规触发（确定性红线 + LLM high）；LLM medium 仅记录——审美级意见若也
+    # 打回，会无限循环到上限才放行（真实冒烟曾 7→3→6 三轮耗尽额度）
+    blocking = det_issues + [i for i in llm_issues if i["severity"] == "high"]
+    advisory = [i for i in llm_issues if i["severity"] != "high"]
+    detail: Dict[str, Any] = {
+        "issue_count": len(issues),
+        "blocking_count": len(blocking),
+        "advisory_count": len(advisory),
+        "engine": engine,
+    }
+    if usage is not None:
+        detail["llm_usage"] = usage
+
+    if blocking:
         critique = {
-            "issues": issues,
+            "issues": blocking,
             "constraints": ["移除所有无证据的绝对化声明，替换为可证实表述（材质/承重数据）"],
         }
         await rec.status(WorkflowStatus.critique_loop.value)
         await rec.step(
             "critic",
-            detail={"verdict": "rewrite", "issue_count": len(issues)},
+            detail={**detail, "verdict": "rewrite"},
             latency_ms=int((time.perf_counter() - t0) * 1000),
         )
         await rec.decision(
             agent="critic",
             decision_type=AgentDecisionType.rewrite.value,
-            reasoning=f"发现 {len(issues)} 处无证据绝对化声明，打回重写并下发约束",
+            reasoning=(
+                f"发现 {len(blocking)} 处合规硬违规"
+                + (f"（另有 {len(advisory)} 条建议项仅记录）" if advisory else "")
+                + "，打回重写并下发约束"
+            ),
             chosen_option="rewrite",
             alternatives=["escalate_to_human"],
         )
         sp = _constraint(state, critique["constraints"][0])
         sp["critique"] = critique
-        return {
-            "critique_issues": issues,
+        update: Dict[str, Any] = {
+            "critique_issues": blocking,
             "critique_rounds": state.get("critique_rounds", 0) + 1,
             "scratchpad": sp,
         }
+    else:
+        await rec.step(
+            "critic",
+            detail={**detail, "verdict": "pass"},
+            latency_ms=int((time.perf_counter() - t0) * 1000),
+        )
+        sp = _sp(state)
+        # 建议项随行归档供运营参考，但不构成发布阻塞
+        sp["critique"] = {"issues": advisory, "advisory_only": True} if advisory else None
+        update = {"critique_issues": [], "scratchpad": sp}
 
-    await rec.step(
-        "critic",
-        detail={"verdict": "pass"},
-        latency_ms=int((time.perf_counter() - t0) * 1000),
-    )
-    sp = _sp(state)
-    sp["critique"] = None
-    return {"critique_issues": [], "scratchpad": sp}
+    if usage is not None:
+        update["llm_usage"] = _merge_llm_usage(state, usage["prompt"], usage["completion"])
+    return update
 
 
 async def node_approval_check(state: Dict[str, Any], config: RunnableConfig) -> Dict[str, Any]:

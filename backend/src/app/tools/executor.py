@@ -62,6 +62,10 @@ class OutputValidationError(ToolError):
     pass
 
 
+class ToolHandlerError(ToolError):
+    """handler 内未分类业务异常的统一包装（如未知渠道名），调用方 except ToolError 可兜底。"""
+
+
 @dataclass(frozen=True)
 class ToolExecutionResult:
     tool: str
@@ -165,10 +169,17 @@ async def execute_tool(
     # ---- 5/6. 执行 + 输出校验 ----
     try:
         raw = await asyncio.wait_for(tool.handler(validated, ctx), timeout=tool.timeout_s)
-        output = tool.output_model.model_validate(raw)
+    except ToolError:
+        raise
     except TimeoutError:
         await _audit("error", input_summary=_summarize(payload), error="timeout")
         raise ToolTimeoutError(f"{name} 超过 {tool.timeout_s}s") from None
+    except Exception as exc:  # noqa: BLE001 —— handler 异常统一包装并落审计，节点侧可按 ToolError 兜底
+        await _audit("error", input_summary=_summarize(payload), error=type(exc).__name__)
+        raise ToolHandlerError(f"{name} handler 异常: {exc}") from exc
+
+    try:
+        output = tool.output_model.model_validate(raw)
     except ValidationError as exc:
         errors = exc.errors(include_url=False, include_input=False)
         await _audit("error", input_summary=_summarize(payload), error="output_schema_invalid")

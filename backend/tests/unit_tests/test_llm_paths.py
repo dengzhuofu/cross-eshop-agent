@@ -91,3 +91,53 @@ async def test_research_node_llm_path_uses_tool_data(monkeypatch):
     assert update["research_evidence_score"] == 0.55
     assert update["llm_usage"]["total_tokens"] == 160
     assert update["llm_usage"]["calls"] == 1
+
+
+def _critic_state() -> dict:
+    return {
+        "workflow_id": "wf_x",
+        "tenant_id": "t_x",
+        "listings": [
+            {"marketplace": "amazon", "title": "Under Bed Storage", "bullets": [], "claim": ""}
+        ],
+        "scratchpad": {"artifacts": {"research_brief": {"review_pain_points": ["塌陷"]}}},
+    }
+
+
+async def test_critic_medium_only_issues_do_not_block(monkeypatch):
+    """LLM 建议项（medium）只记录不阻塞；无硬违规时应放行（verdict=pass）。"""
+    from app.graphs.product_launch import nodes as N
+    from app.graphs.product_launch.nodes import node_critic
+
+    async def _fake(state, config):
+        return (
+            [{"marketplace": "amazon", "field": "title", "issue": "可更精炼",
+              "severity": "medium", "rule": "风格建议"}],
+            {"prompt": 10, "completion": 5},
+        )
+
+    monkeypatch.setattr(N, "llm_enabled", lambda: True)
+    monkeypatch.setattr(N, "_critic_via_llm", _fake)
+    update = await node_critic(_critic_state(), {"configurable": {"recorder": NullRecorder()}})
+    assert update["critique_issues"] == []  # 不打回
+    assert update["scratchpad"]["critique"]["advisory_only"] is True  # 建议项归档
+
+
+async def test_critic_high_issue_triggers_rewrite(monkeypatch):
+    """硬违规（high）必须触发重写并计入轮次。"""
+    from app.graphs.product_launch import nodes as N
+    from app.graphs.product_launch.nodes import node_critic
+
+    async def _fake(state, config):
+        return (
+            [{"marketplace": "amazon", "field": "claim", "issue": "100% 防霉属绝对化承诺",
+              "severity": "high", "rule": "绝对化承诺"}],
+            {"prompt": 10, "completion": 5},
+        )
+
+    monkeypatch.setattr(N, "llm_enabled", lambda: True)
+    monkeypatch.setattr(N, "_critic_via_llm", _fake)
+    update = await node_critic(_critic_state(), {"configurable": {"recorder": NullRecorder()}})
+    assert len(update["critique_issues"]) == 1
+    assert update["critique_rounds"] == 1
+    assert update["scratchpad"]["critique"]["constraints"]

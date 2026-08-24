@@ -59,16 +59,28 @@
 - 启动:`cd frontend && npm run dev` → http://localhost:5173;构建 `npm run build`(tsc 零错误)
 - 注意:Playwright locator click 在该 IAB 上会超时(fill 正常),浏览器操作用 dom_cua 节点路径或 cua 坐标(截图坐标是缩放过的,需按视口换算)
 
+## ✅ M3 三角真身(下):治理工具补全 + critic LLM 审查(已完成,真实 LLM 全链路冒烟通过)
+
+- **新工具目录(共 9 个治理工具)**:
+  - estimate_profit:佣金率取自 MarketplaceAdapter 规则(**注意 referral_fee_pct 是百分数 15.0,不是 0.15**——初版没除 100 被冒烟抓出),含退货损耗项;margin 25.41% vs 旧 stub 27.31%
+  - search_suppliers:供应商目录 + 历史风险记忆 seed(sup_002 memory_hit);节点内确定性选择(low-risk 优先→质量分降序→价格升序)
+  - generate_image_brief:按平台 ImageSpec 出结构化拍摄 brief(主图规范/分镜/合规注意);listing 节点替换硬编码 image_brief
+- **critic 两层审查**:第一层确定性违禁词扫描(红线,零成本)不变;第二层 LLM 语义审查(_critic_via_llm,失败降级纯确定性)。**分级拦截:high 才触发重写,medium 只记录进 scratchpad**——否则审美级意见无限打回直到循环上限(真实冒烟曾 7→3→6 三轮耗尽)
+- **踩坑:critic rubric 的范畴错误**——初版把"宣称解决品类差评点"当"与证据矛盾"追打(承重30kg回应"易塌陷"被打回)。修正后语义:品类痛点≠本品矛盾,解决方案型卖点是正当营销;硬违规只限绝对化措辞(odor-free 这类,应写 low-odor)与本品自身事实矛盾。修正后离线复现验证:承重卖点不报、Odor-free 正确报 high
+- **executor 加固**:handler 内非 ToolError 异常(如未知渠道名)原先会穿透节点的 except ToolError 兜底 → 新增 ToolHandlerError 统一包装并落审计
+- **测试 38 个全绿**(+7 工具单测:数学/adapter 费率驱动/memory_hit/ImageSpec/executor 通道一致性;+2 critic 分级拦截);ruff 干净
+- **真实 LLM 冒烟**:run `117912aa` 一次通过(critic pass blocking=0,15 治理工具调用,publish×3 幂等键);此前 run `9144c2c8` 验证了重写闭环全形态(27 条审计含 image_brief×8)
+
 ## 后续里程碑速查
 
-M3 三角真身(下):critic LLM 化 + generate_image_brief + profit/supplier 真实现 · M4 记忆双线(pgvector)+上下文压缩+token硬熔断 · M5 HITL interrupt · M6 Support RAG · M7 BadCase 红队 · M8 前端五页打磨(可观测面板三视图已完成)。
+M4 记忆双线(pgvector)+上下文压缩+token硬熔断 · M5 HITL interrupt · M6 Support RAG · M7 BadCase 红队 · M8 前端五页打磨(可观测面板三视图已完成)。
 
 ## 验证命令
 
 ```bash
 bash backend/scripts/dev_postgres.sh          # 起 PG(15433)
 cd backend && .venv/Scripts/python -m ruff check src tests scripts
-.venv/Scripts/python -m pytest                # 29 个测试(RUN_LLM_SMOKE=1 追加 2 个真网冒烟)
+.venv/Scripts/python -m pytest                # 38 个测试(RUN_LLM_SMOKE=1 追加 2 个真网冒烟)
 .venv/Scripts/python scripts/reset_demo.py && .venv/Scripts/python scripts/seed_mock_data.py
 .venv/Scripts/python -m uvicorn app.api.main:app --port 8000   # cwd=backend
 ```
