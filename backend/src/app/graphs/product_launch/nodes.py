@@ -7,6 +7,8 @@
 每个自主决策点都写 AgentDecision（理由 + 备选项），对应 PRD §8.3 决策点清单。
 """
 
+import json
+import logging
 import time
 from typing import Any, Dict, List
 
@@ -14,9 +16,12 @@ from langchain_core.runnables import RunnableConfig
 
 from app.config import get_settings
 from app.domain.enums import AgentDecisionType, WorkflowStatus
+from app.llm import extract_json, get_llm_client, llm_enabled
 from app.observability.recorder import recorder_from_config
 from app.persistence.memory import MemoryWorkflowRepository
 from app.tools import ToolContext, ToolError, execute_tool
+
+logger = logging.getLogger(__name__)
 
 # Critic 声明黑名单（MVP 规则校验器雏形；M7 移入 guardrails.detectors）
 BANNED_CLAIM_PHRASES = ("保证", "100%", "治愈", "根治")
@@ -44,6 +49,43 @@ def _tool_ctx(state: Dict[str, Any]) -> ToolContext:
         actor_id="graph",
         approved=bool(state.get("approved")),
     )
+
+
+def _merge_llm_usage(
+    state: Dict[str, Any], prompt_tokens: int, completion_tokens: int
+) -> Dict[str, Any]:
+    """PRD §17 计量接缝：M2 只累计 + 超阈值告警日志，不做硬熔断（M4 再接预算控制器）。"""
+    u = dict(state.get("llm_usage") or {})
+    u["calls"] = int(u.get("calls", 0)) + 1
+    u["prompt_tokens"] = int(u.get("prompt_tokens", 0)) + prompt_tokens
+    u["completion_tokens"] = int(u.get("completion_tokens", 0)) + completion_tokens
+    u["total_tokens"] = u["prompt_tokens"] + u["completion_tokens"]
+    threshold = get_settings().token_alert_threshold
+    if u["total_tokens"] > threshold:
+        logger.warning(
+            "token budget alert: workflow %s累计 %s tokens > 阈值 %s",
+            state.get("workflow_id"),
+            u["total_tokens"],
+            threshold,
+        )
+    return u
+
+
+async def _call_llm_json(
+    system: str, user: str, *, temperature: float | None = None, max_tokens: int = 1200
+) -> tuple[dict, Dict[str, Any]]:
+    """一次 LLM 调用 + JSON 解析；返回 (解析结果, usage 增量)。解析失败抛 LlmError。"""
+    s = get_settings()
+    result = await get_llm_client().chat(
+        [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        temperature=s.llm_temperature if temperature is None else temperature,
+        max_tokens=max_tokens,
+    )
+    parsed = extract_json(result.content)
+    return parsed, {"prompt": result.prompt_tokens, "completion": result.completion_tokens}
 
 
 def _sp(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -88,50 +130,140 @@ async def node_planner(state: Dict[str, Any], config: RunnableConfig) -> Dict[st
     return {"scratchpad": _artifact(state, "plan", plan)}
 
 
+RESEARCH_SYSTEM_PROMPT = """你是跨境电商选品研究官。
+基于工具返回的数据评估选题证据完整度并输出结构化结论。只输出一个 JSON 对象，schema：
+{"evidence_score": 0.0~1.0, "demand_signal": "一句话需求信号",
+ "competitor_gap": "一句话竞品缺口", "review_pain_points": ["痛点1", "痛点2"],
+ "evidence_refs": ["数据来源编号"], "reasoning": "评分理由(中文,≤120字)"}
+
+评分 rubric（必须遵守）：
+- 缺少竞品数据或评论痛点任一维度时，evidence_score 必须 ≤ 0.60；
+- 三个维度（趋势/竞品/评论）齐全且有正反面证据时，evidence_score 取 0.75~0.95；
+- 数据相互矛盾时下调并在 reasoning 说明。"""
+
+STUB_REFS_ROUND1 = ["ev_trend_001", "ev_comp_014"]
+STUB_REFS_ROUND2 = ["ev_trend_001", "ev_comp_014", "ev_rev_103", "ev_kw_021"]
+
+
+async def _research_via_llm(
+    state: Dict[str, Any], config: RunnableConfig, idea: str, market: str, rounds: int
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """LLM 研究路径：数据一律来自受治理的工具，LLM 只做综合与评分。"""
+    repo = _tool_repo(config)
+    ctx = _tool_ctx(state)
+    # 第一轮只取趋势（证据天然单薄）；深化轮才补竞品与评论——深化的动机是数据可得性
+    wanted: list[tuple[str, dict]] = [
+        ("search_market_trends", {"keyword": idea, "target_market": market})
+    ]
+    if rounds >= 1:
+        wanted += [
+            ("search_competitor_listings", {"keyword": idea}),
+            ("search_customer_reviews", {"keyword": idea}),
+        ]
+    tool_outputs: Dict[str, Any] = {}
+    usage = {"prompt": 0, "completion": 0}
+    for name, payload in wanted:
+        try:
+            res = await execute_tool(name, payload, ctx, repo)
+            tool_outputs[name] = res.output
+        except ToolError as exc:
+            tool_outputs[name] = {"error": str(exc)}
+
+    parsed, u = await _call_llm_json(
+        RESEARCH_SYSTEM_PROMPT,
+        "选题：{}（目标市场 {}）\n工具数据：\n{}".format(
+            idea, market, json.dumps(tool_outputs, ensure_ascii=False)
+        ),
+    )
+    usage["prompt"] += u["prompt"]
+    usage["completion"] += u["completion"]
+
+    score = max(0.0, min(1.0, float(parsed.get("evidence_score", 0.0))))
+    # 硬保证：LLM 只提议分数，维度缺失时的 ≤0.60 封顶由代码执行（与 listing 的
+    # 确定性整形同思路）——真实 LLM 偶发违反 rubric（曾给 0.70），不能依赖自觉
+    has_comp = "search_competitor_listings" in tool_outputs and not tool_outputs[
+        "search_competitor_listings"
+    ].get("error")
+    has_rev = "search_customer_reviews" in tool_outputs and not tool_outputs[
+        "search_customer_reviews"
+    ].get("error")
+    if not (has_comp and has_rev):
+        score = min(score, 0.60)
+    brief = {
+        "round": rounds + 1,
+        "evidence_score": score,
+        "demand_signal": str(parsed.get("demand_signal", ""))[:200],
+        "competitor_gap": str(parsed.get("competitor_gap", ""))[:200],
+        "review_pain_points": [str(x) for x in (parsed.get("review_pain_points") or [])][:6],
+        "evidence_refs": [str(x) for x in (parsed.get("evidence_refs") or [])][:8],
+        "reasoning": str(parsed.get("reasoning", ""))[:400],
+        "tool_outputs": tool_outputs,
+    }
+    return brief, usage
+
+
 async def node_research(state: Dict[str, Any], config: RunnableConfig) -> Dict[str, Any]:
     rec = recorder_from_config(config)
     s = get_settings()
     t0 = time.perf_counter()
     rounds = state.get("research_rounds", 0)
+    task_input = state["task_input"]
+    idea = str(task_input.get("product_idea") or "Foldable Under-Bed Storage Box")
+    market = str(task_input.get("target_market") or "US")
 
-    # stub 剧情（对齐 PRD §24 demo 步骤 3）：首轮缺评论/关键词证据 → 分数低于阈值；
-    # 深化一轮补齐后达标。M2 替换为 search_market_trends 等 typed tools 的真实评分。
-    score = 0.82 if rounds >= 1 else 0.55
-    refs = (
-        ["ev_trend_001", "ev_comp_014"]
-        if rounds == 0
-        else ["ev_trend_001", "ev_comp_014", "ev_rev_103", "ev_kw_021"]
-    )
-    brief = {
+    engine = "stub"
+    usage: Dict[str, Any] | None = None
+    brief: Dict[str, Any] | None = None
+    if llm_enabled():
+        try:
+            brief, usage = await _research_via_llm(state, config, idea, market, rounds)
+            engine = "llm"
+        except Exception:  # noqa: BLE001 —— LLM 失败降级 stub，主链路不中断
+            logger.exception("research llm path failed; falling back to stub")
+
+    if brief is None:
+        # stub 剧情（对齐 PRD §24 demo 步骤 3）：首轮证据薄 → 低于阈值；深化后达标
+        score = 0.82 if rounds >= 1 else 0.55
+        brief = {
+            "round": rounds + 1,
+            "evidence_score": score,
+            "demand_signal": "床底收纳近90天搜索环比 +23%",
+            "competitor_gap": "头部竞品普遍不支持折叠，差评集中在占空间",
+            "review_pain_points": ["易塌陷", "异味", "拉链损坏"],
+            "evidence_refs": STUB_REFS_ROUND1 if rounds == 0 else STUB_REFS_ROUND2,
+        }
+    score = float(brief["evidence_score"])
+
+    await rec.status(WorkflowStatus.researching.value)
+    detail = {
         "round": rounds + 1,
         "evidence_score": score,
-        "demand_signal": "床底收纳近90天搜索环比 +23%",
-        "competitor_gap": "头部竞品普遍不支持折叠，差评集中在占空间",
-        "review_pain_points": ["易塌陷", "异味", "拉链损坏"],
-        "evidence_refs": refs,
+        "engine": engine,
     }
-    await rec.status(WorkflowStatus.researching.value)
-    await rec.step(
-        "research",
-        detail={"round": rounds + 1, "evidence_score": score},
-        latency_ms=int((time.perf_counter() - t0) * 1000),
-    )
+    if usage is not None:
+        detail["llm_usage"] = usage
+    await rec.step("research", detail=detail, latency_ms=int((time.perf_counter() - t0) * 1000))
     if score < s.evidence_threshold:
+        reason = brief.get("reasoning") or (
+            f"证据完整度 {score:.2f} 低于阈值 {s.evidence_threshold}，触发第二轮研究补充证据"
+        )
         await rec.decision(
             agent="planner",
             decision_type=AgentDecisionType.research_deepening.value,
-            reasoning=(
-                f"证据完整度 {score:.2f} 低于阈值 {s.evidence_threshold}，"
-                "缺少评论痛点与关键词维度，触发第二轮研究补充证据"
-            ),
+            reasoning=f"证据完整度 {score:.2f} 低于阈值 {s.evidence_threshold}；{reason}",
             chosen_option="deepen",
             alternatives=["abort"],
         )
-    return {
+    update: Dict[str, Any] = {
         "research_evidence_score": score,
         "research_rounds": rounds + 1,
         "scratchpad": _artifact(state, "research_brief", brief),
     }
+    if usage is not None:
+        update["llm_usage"] = _merge_llm_usage(
+            state, usage["prompt"], usage["completion"]
+        )
+    return update
 
 
 async def node_profit(state: Dict[str, Any], config: RunnableConfig) -> Dict[str, Any]:
@@ -215,22 +347,80 @@ async def node_supplier(state: Dict[str, Any], config: RunnableConfig) -> Dict[s
     return {"suppliers": suppliers}
 
 
+GATE_SYSTEM_PROMPT = """你是跨境电商业务的决策官，负责选品推进的 go/no-go 闸门。只输出 JSON：
+{"chosen": "proceed|revise|abort", "reasoning": "决策理由(中文,≤150字)"}
+
+决策 rubric（按优先级自上而下，命中即停）：
+- 利润率 < 5%，或 supplier_risk.primary_risk=high 且 has_backup=false → abort；
+- 贡献利润率 ≥ 15% 且证据完整度 ≥ 阈值 → proceed；
+  此时 notes 里其他供应商的历史风险等次要信息只能写进 reasoning 供后续参考，不得改变结论；
+- 其余情况 → revise（调整售价/成本后再评估）。
+备选项是 revise 与 abort（除非你选的就是其中之一）。"""
+
+
 async def node_decision_gate(state: Dict[str, Any], config: RunnableConfig) -> Dict[str, Any]:
     """顶层 go/no-go（PRD §7.13）：综合研究/利润/供应商证据做显式决策。"""
     rec = recorder_from_config(config)
     t0 = time.perf_counter()
     margin = (state.get("profit") or {}).get("margin_pct", 0)
     score = state.get("research_evidence_score", 0)
+    threshold = get_settings().evidence_threshold
 
-    # stub 判定规则（M2 由 Planner LLM 结合 rubric 决策）：利润≥15% 且证据≥阈值 即 proceed
-    go = "proceed" if margin >= 0.15 and score >= get_settings().evidence_threshold else "abort"
-    reasoning = (
-        f"证据完整度 {score:.2f}、贡献利润率 {margin:.1%}；"
-        "利润与证据均达阈值，主供应商风险低，决定进入 Listing 生成"
-    )
+    engine = "stub"
+    go: str | None = None
+    reasoning = ""
+    usage: Dict[str, Any] | None = None
+    if llm_enabled():
+        try:
+            brief = (state.get("scratchpad", {}).get("artifacts", {}) or {}).get(
+                "research_brief"
+            ) or {}
+            # 主供应商风险等级在代码里判定后显式下发，避免 LLM 从 flags 文本误读（曾把
+            # "sup_002 已降权"当成主供应商高风险导致 revise/abort 摇摆）
+            sup = state.get("suppliers") or {}
+            cands = {c["id"]: c for c in (sup.get("candidates") or [])}
+            supplier_risk = {
+                "primary_id": sup.get("primary"),
+                "primary_risk": (cands.get(sup.get("primary")) or {}).get("risk", "unknown"),
+                "has_backup": bool(sup.get("backup")),
+                "notes": sup.get("risk_flags"),
+            }
+            evidence_summary = {
+                "research": {
+                    "evidence_score": score,
+                    "demand_signal": brief.get("demand_signal"),
+                    "pain_points": brief.get("review_pain_points"),
+                },
+                "profit": state.get("profit"),
+                "supplier_risk": supplier_risk,
+                "thresholds": {"evidence": threshold, "margin": 0.15},
+            }
+            parsed, u = await _call_llm_json(
+                GATE_SYSTEM_PROMPT, json.dumps(evidence_summary, ensure_ascii=False)
+            )
+            chosen = str(parsed.get("chosen", "")).strip().lower()
+            if chosen in ("proceed", "revise", "abort"):
+                go = chosen
+                reasoning = str(parsed.get("reasoning", ""))[:400]
+                engine = "llm"
+                usage = u
+        except Exception:  # noqa: BLE001
+            logger.exception("decision gate llm path failed; falling back to rule")
+
+    if go is None:
+        # 规则兜底：利润与证据双达标即 proceed（stub 与 LLM 故障时都走这里）
+        go = "proceed" if margin >= 0.15 and score >= threshold else "abort"
+        reasoning = (
+            f"证据完整度 {score:.2f}、贡献利润率 {margin:.1%}；"
+            "利润与证据均达阈值，主供应商风险低，决定进入 Listing 生成"
+        )
+
     await rec.status(WorkflowStatus.decision_gate.value)
+    detail: Dict[str, Any] = {"chosen": go, "engine": engine}
+    if usage is not None:
+        detail["llm_usage"] = usage
     await rec.step(
-        "decision_gate", detail={"chosen": go}, latency_ms=int((time.perf_counter() - t0) * 1000)
+        "decision_gate", detail=detail, latency_ms=int((time.perf_counter() - t0) * 1000)
     )
     await rec.decision(
         agent="planner",
@@ -239,60 +429,142 @@ async def node_decision_gate(state: Dict[str, Any], config: RunnableConfig) -> D
         chosen_option=go,
         alternatives=["revise", "abort"],
     )
-    return {"go_no_go": go}
+    update: Dict[str, Any] = {"go_no_go": go}
+    if usage is not None:
+        update["llm_usage"] = _merge_llm_usage(state, usage["prompt"], usage["completion"])
+    return update
+
+
+LISTING_SYSTEM_PROMPT = """你是跨境电商平台的资深 Listing 文案官。
+根据产品信息、平台规则与研究证据撰写该平台的商品文案。只输出 JSON：
+{"title": "平台标题", "bullets": ["卖点1", "卖点2"], "claim": "一句核心卖点声明",
+ "keywords": ["关键词1"]}
+
+硬性要求：
+- title 长度 ≤ {title_max} 字符；bullets 数量在 {bmin}~{bmax} 条之间；
+- claim/bullets 中每句功效表述必须有研究证据支撑，禁止无证据的绝对化承诺（如"保证/100%/最佳"）；
+- {constraint_block}
+- 语言与风格贴合目标市场。"""
+
+STUB_FLAVOR = {
+    "amazon": ["Fits under most beds", "Foldable flat in 3s", "Reinforced zipper"],
+    "shopify": ["SEO: under bed storage", "Story block: 小空间收纳灵感"],
+    "tiktok_shop": ["3秒折叠！床底瞬间扩容", "Before/After 对比镜头"],
+}
+
+
+async def _listing_via_llm(
+    idea: str,
+    market: str,
+    rules: Dict[str, Any],
+    research_brief: Dict[str, Any],
+    constraints: List[str],
+    usage_acc: Dict[str, int],
+) -> Dict[str, Any] | None:
+    """LLM 文案路径。返回字段 dict；任何失败返回 None 由调用方降级。"""
+    constraint_block = (
+        "Critic 合规约束（必须逐条满足）：\n- " + "\n- ".join(constraints)
+        if constraints
+        else "本轮尚未有 Critic 约束。"
+    )
+    evidence_pack = {
+        "demand_signal": research_brief.get("demand_signal"),
+        "competitor_gap": research_brief.get("competitor_gap"),
+        "review_pain_points": research_brief.get("review_pain_points"),
+    }
+    parsed, u = await _call_llm_json(
+        LISTING_SYSTEM_PROMPT.replace("{title_max}", str(rules.get("title_max_length", 200)))
+        .replace("{bmin}", str(rules.get("bullets_min", 0)))
+        .replace("{bmax}", str(rules.get("bullets_max", 10)))
+        .replace("{constraint_block}", constraint_block),
+        json.dumps(
+            {"product": idea, "target_market": market, "evidence": evidence_pack},
+            ensure_ascii=False,
+        ),
+        temperature=0.6,
+        max_tokens=900,
+    )
+    usage_acc["prompt"] += u["prompt"]
+    usage_acc["completion"] += u["completion"]
+    title = str(parsed.get("title", "")).strip()
+    bullets = [str(b).strip() for b in (parsed.get("bullets") or []) if str(b).strip()]
+    claim = str(parsed.get("claim", "")).strip()
+    keywords = [str(k).strip() for k in (parsed.get("keywords") or []) if str(k).strip()]
+    if not title or not bullets or not claim:
+        return None
+    return {"title": title, "bullets": bullets, "claim": claim, "keywords": keywords}
 
 
 async def node_listing(state: Dict[str, Any], config: RunnableConfig) -> Dict[str, Any]:
     rec = recorder_from_config(config)
     t0 = time.perf_counter()
     task_input = state["task_input"]
-    idea = task_input.get("product_idea", "Foldable Under-Bed Storage Box")
+    idea = str(task_input.get("product_idea") or "Foldable Under-Bed Storage Box")
+    market = str(task_input.get("target_market") or "US")
     marketplaces = task_input.get("marketplaces") or ["amazon", "shopify", "tiktok_shop"]
     rounds = state.get("critique_rounds", 0)
     constraints = (_sp(state).get("constraints")) or []
     repo = _tool_repo(config)
     ctx = _tool_ctx(state)
 
+    engine = "stub"
+    usage_acc = {"prompt": 0, "completion": 0}
+    research_brief = (_sp(state).get("artifacts") or {}).get("research_brief") or {}
+    use_llm = llm_enabled()
+    if use_llm:
+        engine = "llm"
+
     drafts: List[Dict[str, Any]] = []
     rules_fetched: Dict[str, Any] = {}
     for mp in marketplaces:
+        bullets = list(STUB_FLAVOR.get(mp, ["Durable foldable storage"]))
+        title = f"{idea} | Foldable Under-Bed Storage Box"
         if rounds == 0:
-            # 故意埋雷：首轮包含无证据绝对化声明，确保 Critic 打回（demo §24 步骤 8）
+            # stub 模式故意埋雷确保 Critic 打回（demo §24 步骤 8）；LLM 模式由真实生成接管
             claim = "保证10年不坏，100%承重无变形"
         else:
-            # 应用 Critic 约束后的可证实表述（可 diff 证明约束生效）
             claim = "采用加厚 PP 材质，实验室测试承重 40kg"
-        bullets = {
-            "amazon": ["Fits under most beds", "Foldable flat in 3s", "Reinforced zipper"],
-            "shopify": ["SEO: under bed storage", "Story block: 小空间收纳灵感"],
-            "tiktok_shop": ["3秒折叠！床底瞬间扩容", "Before/After 对比镜头"],
-        }.get(mp, ["Durable foldable storage"])
-        bullets = list(bullets)
-        title = f"{idea} | Foldable Under-Bed Storage Box"
 
-        # M1：经 ToolExecutor 查平台规则，卖点/标题按真实规则整形——
-        # 不再硬编码各平台差异，规则唯一来源是 adapter
+        # M1：经 ToolExecutor 查平台规则，卖点/标题按真实规则整形——规则唯一来源是 adapter
+        rules: Dict[str, Any] = {}
         try:
-            res = await execute_tool(
-                "get_marketplace_rules", {"marketplace": mp}, ctx, repo
-            )
+            res = await execute_tool("get_marketplace_rules", {"marketplace": mp}, ctx, repo)
             rules = res.output["rules"] if res.output else {}
             rules_fetched[mp] = {
                 "bullets_min": rules.get("bullets_min"),
                 "bullets_max": rules.get("bullets_max"),
             }
-            i = 0
-            while len(bullets) < int(rules.get("bullets_min") or 0):
-                bullets.append(GENERIC_BULLET_FILLERS[i % len(GENERIC_BULLET_FILLERS)])
-                i += 1
-            bmax = rules.get("bullets_max")
-            if bmax:
-                bullets = bullets[: int(bmax)]
-            tmax = rules.get("title_max_length")
-            if tmax and len(title) > int(tmax):
-                title = title[: int(tmax)]
         except ToolError as exc:  # 未知平台等：降级为未整形草稿，留给 critic/人工兜底
             rules_fetched[mp] = {"error": str(exc)}
+
+        # M2：LLM 文案生成（rewrite 轮注入 Critic 约束）；失败降级 stub 文案
+        keywords = ["under bed storage", "foldable box", "bedroom organizer"]
+        if use_llm:
+            try:
+                gen = await _listing_via_llm(
+                    idea, market, rules, research_brief, constraints, usage_acc
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("listing llm generation failed for %s; fallback stub", mp)
+                gen = None
+            if gen is not None:
+                title = gen["title"]
+                bullets = gen["bullets"]
+                claim = gen["claim"]
+                if gen["keywords"]:
+                    keywords = gen["keywords"]
+
+        # 规则整形是硬保证：LLM 输出也必须过这一关（不信任生成端遵守了限制）
+        i = 0
+        while len(bullets) < int(rules.get("bullets_min") or 0):
+            bullets.append(GENERIC_BULLET_FILLERS[i % len(GENERIC_BULLET_FILLERS)])
+            i += 1
+        bmax = rules.get("bullets_max")
+        if bmax:
+            bullets = bullets[: int(bmax)]
+        tmax = rules.get("title_max_length")
+        if tmax and len(title) > int(tmax):
+            title = title[: int(tmax)]
 
         drafts.append(
             {
@@ -300,7 +572,7 @@ async def node_listing(state: Dict[str, Any], config: RunnableConfig) -> Dict[st
                 "title": title,
                 "bullets": bullets,
                 "claim": claim,
-                "keywords": ["under bed storage", "foldable box", "bedroom organizer"],
+                "keywords": keywords,
                 "image_brief": {
                     "main": "白底主图：展开态45°角",
                     "scene": "床底推入场景",
@@ -309,12 +581,25 @@ async def node_listing(state: Dict[str, Any], config: RunnableConfig) -> Dict[st
             }
         )
     await rec.status(WorkflowStatus.drafting_listings.value)
-    detail: Dict[str, Any] = {"count": len(drafts), "round": rounds + 1}
+    detail: Dict[str, Any] = {
+        "count": len(drafts),
+        "round": rounds + 1,
+        "engine": engine,
+    }
     if rounds > 0:
         detail["applied_constraints"] = constraints
     detail["rules_fetched_via_tools"] = rules_fetched
+    # 文案是演示的核心产出，把标题放进 step 详情供 UI 直接展示（完整内容在 listings 状态里）
+    detail["titles"] = {d["marketplace"]: d["title"] for d in drafts}
+    if usage_acc["prompt"] or usage_acc["completion"]:
+        detail["llm_usage"] = usage_acc
     await rec.step("listing", detail=detail, latency_ms=int((time.perf_counter() - t0) * 1000))
-    return {"listings": drafts}
+    update: Dict[str, Any] = {"listings": drafts}
+    if usage_acc["prompt"] or usage_acc["completion"]:
+        update["llm_usage"] = _merge_llm_usage(
+            state, usage_acc["prompt"], usage_acc["completion"]
+        )
+    return update
 
 
 async def node_critic(state: Dict[str, Any], config: RunnableConfig) -> Dict[str, Any]:

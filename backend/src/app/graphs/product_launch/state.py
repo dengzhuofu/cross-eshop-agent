@@ -45,6 +45,9 @@ class ProductLaunchState(TypedDict, total=False):
 
     approved: bool
 
+    # LLM 计量（PRD §17 接缝：M2 累计 + 阈值告警日志，M4 接预算控制器）
+    llm_usage: Dict[str, Any]
+
     published: List[Dict[str, Any]]
     ops: Dict[str, Any]
     support: Dict[str, Any]

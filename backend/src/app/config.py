@@ -16,11 +16,15 @@ class Settings(BaseSettings):
     max_research_rounds: int = 2
     max_critique_rounds: int = 3
 
-    # LLM provider（M0 stub 节点不调用；M2 接入 SiliconFlow）
+    # LLM provider（无 key 时节点自动走确定性 stub 路径，测试/CI 不依赖网络）
     siliconflow_api_key: str = ""
     siliconflow_base_url: str = "https://api.siliconflow.cn/v1"
     llm_model: str = "deepseek-ai/DeepSeek-V3.2"
     embedding_model: str = "BAAI/bge-m3"
+    llm_temperature: float = 0.4
+    llm_timeout_s: float = 60.0
+    # PRD §17 计量接缝：M2 只做累计 + 告警日志，不做硬熔断
+    token_alert_threshold: int = 50000
 
 
 @lru_cache

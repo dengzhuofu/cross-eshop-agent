@@ -37,9 +37,18 @@
 - **测试 22 个全绿**:适配器差异 6 + executor 集成 6(幂等回放同 listing_id/跨租户引用拒绝并落审计/AUTO_APPROVE=false 时审批门拒绝、带凭据放行/validation_failed 业务路径/schema 校验/未知工具)
 - **冒烟 E2E(真库)**:completed 15步6决策;审计链 rules×4 + publish×2(high/ok/幂等键);research×2、listing→critic×2 循环可见;跨租户读 404
 
-### M2 待办(下一步)
+## ✅ M2 三角真身(上):LLM 接入(已完成,真实 LLM 全链路冒烟通过)
 
-SiliconFlow 接入:research/listing 节点换真 LLM(typed tools: search_market_trends 等 stub 化数据源)、go/no-go 由 Planner 结合 rubric 决策、决策 reasoning 用 LLM 生成但仍写 AgentDecision 表。注意 SILICONFLOW_API_KEY 只进 .env,永不入库入 git。
+- **llm/client.py**:OpenAI 兼容客户端(SiliconFlow,DeepSeek-V3.2);429/5xx 指数退避重试;`extract_json`(fenced→全文→首个平衡括号);`llm_enabled()` 门控——无 key 走 stub,**conftest 强制清空 key 保证测试永不出网**;`RUN_LLM_SMOKE=1` 才跑真网冒烟(2 用例:连通性+rubric 遵从)
+- **研究数据源工具**:tools/catalog/research.py 注册 search_market_trends / search_competitor_listings / search_customer_reviews(mock 数据,床底收纳域);LLM 数据一律来自受治理工具,只做综合与评分
+- **节点 LLM 化(research/decision_gate/listing)**:
+  - research:第一轮只有趋势(代码保证 score≤0.60)→ deepen → 第二轮补竞品+评论 → 0.75~0.95;rubric 违规由代码硬封顶(LLM 曾给趋势轮打 0.70)
+  - decision_gate:evidence_summary 显式下发 `supplier_risk.primary_risk/has_backup`(曾因 LLM 从 flags 文本误读主供应商风险导致 revise/proceed 摇摆);GATE rubric 改为**优先级序**(abort 条件→proceed 条件→revise),命中即停,次要风险只准写进 reasoning
+  - listing:LLM 生成三平台文案后仍走确定性整形(bullets 数量/标题长度按平台规则截断),critic 约束回注重写路径不变;listing step detail 增加 titles(UI 直接可见 LLM 文案)
+  - **设计原则:LLM 只提议,代码做硬保证**(评分封顶/规则整形/rubric 优先级全是确定性兜底);任何 LLM 异常降级 stub 主链路不断
+- **计量接缝(PRD §17)**:`_merge_llm_usage` 累计 tokens 进 state.llm_usage,超阈值告警日志(step detail 带 llm_usage);硬熔断留给 M4
+- **测试 29 个全绿**(新增 extract_json×4、usage 累计、降级 stub、fake-LLM 路径);ruff 干净
+- **真实 LLM 冒烟(DeepSeek-V3.2 实测)**:showcase run `7a7d671f` 全链路 completed——research 0.60→deepen→0.85→gate proceed(reasoning 正确引用 rubric 且把供应商历史风险列为参考)→listing×3 平台英文文案(engine=llm,titles 进 step detail UI 可见)→critic pass→publish×3 幂等键→复盘;UI 详情页三区块渲染正常
 
 ## ✅ 前端可观测面板(已提前落地,浏览器实测通过)
 
@@ -52,14 +61,14 @@ SiliconFlow 接入:research/listing 节点换真 LLM(typed tools: search_market_
 
 ## 后续里程碑速查
 
-M3 利润/供应商真实现 · M4 记忆双线(pgvector)+上下文压缩+token计量 · M5 HITL interrupt · M6 Support RAG · M7 BadCase 红队 · M8 前端五页打磨(可观测面板三视图已提前完成,见上节)。
+M3 三角真身(下):critic LLM 化 + generate_image_brief + profit/supplier 真实现 · M4 记忆双线(pgvector)+上下文压缩+token硬熔断 · M5 HITL interrupt · M6 Support RAG · M7 BadCase 红队 · M8 前端五页打磨(可观测面板三视图已完成)。
 
 ## 验证命令
 
 ```bash
 bash backend/scripts/dev_postgres.sh          # 起 PG(15433)
 cd backend && .venv/Scripts/python -m ruff check src tests scripts
-.venv/Scripts/python -m pytest                # 22 个测试
+.venv/Scripts/python -m pytest                # 29 个测试(RUN_LLM_SMOKE=1 追加 2 个真网冒烟)
 .venv/Scripts/python scripts/reset_demo.py && .venv/Scripts/python scripts/seed_mock_data.py
 .venv/Scripts/python -m uvicorn app.api.main:app --port 8000   # cwd=backend
 ```

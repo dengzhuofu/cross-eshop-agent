@@ -15,6 +15,8 @@ os.environ["AUTO_APPROVE"] = "true"
 os.environ["EVIDENCE_THRESHOLD"] = "0.7"
 os.environ["MAX_RESEARCH_ROUNDS"] = "2"
 os.environ["MAX_CRITIQUE_ROUNDS"] = "3"
+# 测试永远跑确定性 stub 路径：即使 backend/.env 配了真 key 也不许出网
+os.environ["SILICONFLOW_API_KEY"] = ""
 
 import pytest  # noqa: E402
 
