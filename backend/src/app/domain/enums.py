@@ -43,6 +43,7 @@ class AgentDecisionType(str, Enum):
     supplier_reselect = "supplier_reselect"
     replan = "replan"
     ops_suggestion = "ops_suggestion"
+    support_reply = "support_reply"  # M6：客服回复草稿（RAG 引用 + 工具实时事实）
     bad_case_handling = "bad_case_handling"
 
 

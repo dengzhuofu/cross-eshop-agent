@@ -57,6 +57,7 @@ export const DECISION_TYPE_LABELS: Record<string, string> = {
   supplier_reselect: '供应商重选',
   replan: '重规划',
   ops_suggestion: '运营建议',
+  support_reply: '客服回复',
   bad_case_handling: '坏例处置',
 };
 
@@ -89,6 +90,8 @@ export const STEP_STATUS_LABELS: Record<string, string> = {
 /** Agent 名 → 中文(human_approver 为 HITL 人工审批者) */
 export const AGENT_LABELS: Record<string, string> = {
   human_approver: '人工审批者',
+  support_agent: '客服专员',
+  ops_analyst: '运营分析师',
 };
 
 /** 渠道显示名 */

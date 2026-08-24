@@ -18,7 +18,7 @@ from langgraph.types import interrupt
 
 from app.config import get_settings
 from app.domain.enums import AgentDecisionType, WorkflowStatus
-from app.llm import extract_json, get_llm_client, llm_enabled
+from app.llm import LlmError, extract_json, get_llm_client, llm_enabled
 from app.observability.recorder import recorder_from_config
 from app.persistence.memory import MemoryWorkflowRepository
 from app.tools import ToolContext, ToolError, execute_tool
@@ -1094,27 +1094,192 @@ async def node_ops(state: Dict[str, Any], config: RunnableConfig) -> Dict[str, A
     return {"ops": {"metrics": metrics, "suggestion": suggestion}}
 
 
+SUPPORT_TICKET = {
+    "ticket_id": "tk_1042",
+    "type": "where_is_my_order",
+    "order_id": "ord_88123",
+}
+
+SUPPORT_SYSTEM_PROMPT = """你是跨境电商客服专员，为工单起草回复。只输出一个 JSON 对象，schema：
+{"draft": "回复正文(中文,120~250字)", "cited_refs": ["引用的知识库文档编号"],
+ "escalate": false, "reason": "是否升级及理由(≤50字)"}
+
+铁律（必须遵守）：
+- 订单状态、物流时效等实时事实只能采用「工具实时数据」里的数值，禁止使用知识库文档中的通用时效；
+- cited_refs 只能从提供的知识库编号中选，没有合适引用就留空数组；
+- 语气专业友善；不出现「保证」「100%」等绝对化承诺。"""
+
+# 工单里的时效表述（订单 ETA 必须与工具一致——PRD §7.11 冲突以工具为准的判定基础）
+_ETA_RE = re.compile(
+    r"\d+\s*[-~至到]\s*\d+\s*个工作日|\d+\s*个工作日|\d+\s*[-~至到]\s*\d+\s*天|\d+\s*天"
+)
+
+
+def _etas_in(text: str) -> List[str]:
+    return [re.sub(r"\s+", "", m.group(0)) for m in _ETA_RE.finditer(text or "")]
+
+
+def _template_reply(
+    ticket: Dict[str, Any], facts: Dict[str, Any], rag_hits: List[Dict[str, Any]]
+) -> tuple[str, List[str]]:
+    """确定性兜底草稿：事实句全部来自工具输出，引用句来自 RAG 命中。"""
+    refs = [h["ref"] for h in rag_hits if h.get("ref")]
+    order_id = ticket.get("order_id", "")
+    if ticket.get("type") == "refund_request":
+        draft = (
+            f"您好，已收到您关于订单 {order_id} 的退款申请。"
+            "退款资格与金额以订单实时状态审核为准（48 小时内人工审核），审核结果将站内信通知。"
+        )
+    elif facts.get("found") and facts.get("status"):
+        eta = (
+            f"，预计 {facts.get('eta_text')} 内送达（以物流实时更新为准）"
+            if facts.get("eta_text")
+            else ""
+        )
+        draft = f"您好，订单 {order_id} 当前物流状态为「{facts.get('status')}」{eta}。"
+    else:
+        draft = f"您好，暂时未能查询到订单 {order_id} 的实时状态，已为您升级人工核实。"
+    if refs:
+        draft += f"如需延迟/退换处理方案，可参考店铺政策（{refs[0]}）。"
+    return draft, refs
+
+
 async def node_support(state: Dict[str, Any], config: RunnableConfig) -> Dict[str, Any]:
+    """客服售后（M6，PRD §7.11）：订单事实走 get_order_status 工具，政策引用走
+    search_knowledge RAG；LLM 只起草，代码做融合铁律的硬保证——草稿里任何与工具
+    ETA 不一致的时效表述都判冲突，整稿弃用回退确定性模板（工具数据不可被覆盖）。
+    """
     rec = recorder_from_config(config)
     t0 = time.perf_counter()
-    # M6 接缝：订单状态走业务工具、政策引用走 RAG（PRD §7.11 融合优先级铁律）
+    ticket = dict(SUPPORT_TICKET)
+    repo = _tool_repo(config)
+    ctx = _tool_ctx(state)
+
+    facts: Dict[str, Any]
+    try:
+        res = await execute_tool(
+            "get_order_status", {"order_id": ticket["order_id"]}, ctx, repo
+        )
+        facts = dict(res.output)
+    except ToolError as exc:
+        facts = {"order_id": ticket["order_id"], "found": False, "error": str(exc)}
+
+    rag: List[Dict[str, Any]] = []
+    rag_error = None
+    try:
+        res = await execute_tool(
+            "search_knowledge",
+            {
+                "query_text": (
+                    f"{ticket['type']} {ticket['order_id']} 物流时效 退换货政策 退款流程"
+                ),
+                "top_k": 3,
+            },
+            ctx,
+            repo,
+        )
+        rag = list(res.output.get("results") or [])
+    except ToolError as exc:
+        rag_error = str(exc)
+
+    template_draft, template_refs = _template_reply(ticket, facts, rag)
+    draft, refs, draft_source = template_draft, template_refs, "template"
+    engine = "stub"
+    conflict: Dict[str, Any] = {"detected": False}
+    escalate = ticket["type"] == "refund_request"  # 退款必须审批（PRD §14.1）
+    usage: Dict[str, Any] | None = None
+
+    if _llm_available(state):
+        engine = "llm"
+        rag_block = "\n".join(
+            f"[{h.get('ref') or h.get('title')}] {h.get('title')}：{str(h.get('content'))[:300]}"
+            for h in rag
+        ) or "（无命中）"
+        try:
+            parsed, u = await _call_llm_json(
+                SUPPORT_SYSTEM_PROMPT,
+                "工单：{}\n工具实时数据：{}\n知识库检索结果：\n{}".format(
+                    json.dumps(ticket, ensure_ascii=False),
+                    json.dumps(facts, ensure_ascii=False),
+                    rag_block,
+                ),
+            )
+            usage = u
+            llm_draft = str(parsed.get("draft", "")).strip()
+            allowed_refs = {h.get("ref") for h in rag if h.get("ref")}
+            llm_refs = [r for r in (parsed.get("cited_refs") or []) if r in allowed_refs]
+            tool_eta = re.sub(r"\s+", "", str(facts.get("eta_text") or ""))
+            draft_etas = _etas_in(llm_draft)
+            bad_etas = [e for e in draft_etas if tool_eta and e != tool_eta]
+            if llm_draft and not bad_etas:
+                # LLM 草稿与工具事实一致：采纳，但引用与措辞仍过确定性整形
+                hedged, changes = _sanitize_llm_copy(llm_draft)
+                draft, draft_source = hedged, "llm"
+                refs = llm_refs or template_refs
+                if changes:
+                    conflict["sanitized"] = changes
+            else:
+                # 硬保证：草稿时效与工具冲突（或空草稿）→ 整稿弃用回退模板
+                conflict = {
+                    "detected": bool(bad_etas),
+                    "tool_eta": tool_eta or None,
+                    "draft_etas": draft_etas,
+                }
+            escalate = bool(parsed.get("escalate")) or escalate
+        except LlmError as exc:
+            conflict["llm_error"] = str(exc)[:120]
+
     support = {
-        "ticket_id": "tk_1042",
-        "type": "where_is_my_order",
-        "order_id": "ord_88123",
-        "draft": (
-            "您好，订单 ord_88123 当前物流状态为「国际运输中」，预计 3-5 个工作日内到达。"
-            "如需延迟处理方案，可参考《退换货政策》POL-RTN-07 v2.1 第 3 条。"
-        ),
-        "refs": ["POL-RTN-07 v2.1"],
+        "ticket_id": ticket["ticket_id"],
+        "type": ticket["type"],
+        "order_id": ticket["order_id"],
+        "draft": draft,
+        "refs": refs,
+        "escalate": escalate,
+        "order_status": facts.get("status"),
+        "eta_text": facts.get("eta_text"),
     }
+    detail = {
+        "ticket": ticket["ticket_id"],
+        "type": ticket["type"],
+        "order_found": bool(facts.get("found")),
+        "order_status": facts.get("status"),
+        "eta_text": facts.get("eta_text"),
+        "draft_preview": draft[:220],
+        "draft_source": draft_source,
+        "engine": engine,
+        "refs": refs,
+        "escalate": escalate,
+        "conflict_check": conflict,
+        "rag_hits": len(rag),
+    }
+    if rag_error:
+        detail["rag_error"] = rag_error[:120]
+    if usage:
+        detail["llm_usage"] = usage
     await rec.status(WorkflowStatus.handling_support.value)
-    await rec.step(
-        "support",
-        detail={"ticket": support["ticket_id"]},
-        latency_ms=int((time.perf_counter() - t0) * 1000),
+    await rec.step("support", detail=detail, latency_ms=int((time.perf_counter() - t0) * 1000))
+    await rec.decision(
+        agent="support_agent",
+        decision_type=AgentDecisionType.support_reply.value,
+        reasoning=(
+            "回复草稿融合：订单/物流实时事实取自 get_order_status 工具，政策引用取自 RAG 知识库；"
+            + (
+                f"检测到草稿时效与工具冲突（{conflict.get('draft_etas')} vs 工具 "
+                f"{conflict.get('tool_eta')}），按 PRD §7.11 铁律弃稿回退模板"
+                if conflict.get("detected")
+                else "草稿与工具事实一致，引用已校验白名单"
+            )
+        ),
+        chosen_option="escalate" if escalate else "draft_reply",
+        alternatives=["draft_reply"] if escalate else ["escalate"],
     )
-    return {"support": support}
+    update: Dict[str, Any] = {"support": support}
+    if usage:
+        update["llm_usage"] = _merge_llm_usage(
+            state, usage["prompt"], usage["completion"]
+        )
+    return update
 
 
 async def node_retrospective(state: Dict[str, Any], config: RunnableConfig) -> Dict[str, Any]:

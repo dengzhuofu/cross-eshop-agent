@@ -14,6 +14,7 @@ from sqlalchemy import select
 from app.persistence.db import session_factory
 from app.persistence.models import (
     AgentDecision,
+    KnowledgeRecord,
     MemoryRecord,
     Tenant,
     ToolCall,
@@ -320,6 +321,60 @@ class WorkflowRepository:
                 "content": r.content,
                 "similarity": _cosine(query_embedding, r.embedding or []),
                 "source_workflow_id": r.source_workflow_id,
+                "created_at": r.created_at.isoformat() if r.created_at else "",
+            }
+            for r in rows
+        ]
+        scored.sort(key=lambda item: item["similarity"], reverse=True)
+        return scored[:top_k]
+
+    # ---- knowledge_base（RAG 五类知识，M6）----
+
+    async def insert_knowledge(self, *, tenant_id: str, category: str, title: str,
+                               content: str, embedding: list[float],
+                               ref: str | None = None, meta: dict | None = None) -> str:
+        """写入一条知识文档，返回 knowledge_id（uuid4().hex）。"""
+        knowledge_id = uuid.uuid4().hex
+        async with self._factory() as s:
+            s.add(
+                KnowledgeRecord(
+                    id=knowledge_id,
+                    tenant_id=tenant_id,
+                    category=category,
+                    title=title,
+                    content=content,
+                    embedding=embedding,
+                    ref=ref,
+                    meta=meta,
+                )
+            )
+            await s.commit()
+        return knowledge_id
+
+    async def search_knowledge(self, *, tenant_id: str, category: str | None,
+                               query_embedding: list[float], top_k: int = 3) -> list[dict]:
+        """按租户（可选再按 category）取候选后 Python 余弦排序取 top_k。
+
+        返回 [{id, category, title, content, similarity, ref, created_at}]，similarity 降序；
+        category=None 查全部五类。查询永远带 tenant_id 过滤（多租户铁律）。
+        """
+        filters = [KnowledgeRecord.tenant_id == tenant_id]
+        if category:
+            filters.append(KnowledgeRecord.category == category)
+        async with self._factory() as s:
+            rows = (
+                (await s.execute(select(KnowledgeRecord).where(*filters)))
+                .scalars()
+                .all()
+            )
+        scored = [
+            {
+                "id": r.id,
+                "category": r.category,
+                "title": r.title,
+                "content": r.content,
+                "similarity": _cosine(query_embedding, r.embedding or []),
+                "ref": r.ref,
                 "created_at": r.created_at.isoformat() if r.created_at else "",
             }
             for r in rows

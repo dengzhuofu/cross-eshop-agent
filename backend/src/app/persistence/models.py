@@ -125,3 +125,23 @@ class MemoryRecord(Base):
         ForeignKey("workflows.id"), index=True
     )
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class KnowledgeRecord(Base):
+    """RAG 知识库（M6 五类知识集合，PRD §7.11）。category: policy / platform_rule /
+    product_info / faq / script，按租户隔离。ref 为文档引用编号（如 POL-RTN-07 v2.1），
+    客服回复草稿的来源引用即引用它。embedding 存储与检索契约同 MemoryRecord。
+    """
+
+    __tablename__ = "knowledge_base"
+    __table_args__ = (Index("ix_knowledge_base_tenant_category", "tenant_id", "category"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    category: Mapped[str] = mapped_column(String(32))
+    title: Mapped[str] = mapped_column(String(200))
+    content: Mapped[str] = mapped_column(Text)
+    embedding: Mapped[list] = mapped_column(JSON)
+    ref: Mapped[str | None] = mapped_column(String(64))
+    meta: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())

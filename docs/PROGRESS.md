@@ -97,9 +97,19 @@
 - **验收**:pytest 50 绿(+4 HITL 集成:挂起快照/通过发布/驳回取消/双路径 auto_approve);浏览器实测 acme 租户:角标 1→卡片区→附言「利润率与供应商风险均在阈值内」→通过→resume→completed,trace 16 步含 approval_check(manual_pending)→approval_check(human, approved=true, comment 原文)→publish×2,决策含 human_approver→approve;驳回路径此前 API 级已验(cancelled + 理由入 halted + publish 0 次);IDOR 404 / 409 双审均已验
 - **已知非缺陷**:决策门 LLM 对弱证据选题可能自评 0.55~0.60 选 revise → 流程在 listing 前合法 halted(系统按设计保守);换选题即可演示
 
+## ✅ M6 客服 RAG:五类知识集合 + 融合铁律(已完成,真实 LLM 全链路冒烟通过)
+
+- **知识库表**:迁移 0003 `knowledge_base`(category/title/content/ref/embedding JSON,租户隔离);五类知识 policy(退换货/退款/保修)/platform_rule(平台售后规则)/product_info(商品说明/尺码/安装)/faq(FAQ/物流时效)/script(客服话术/差评处理),seed 脚本 `scripts/seed_knowledge.py` + 数据模块 `scripts/knowledge_seed_data.py`(22 条,嵌入引擎跟随 .env,零向量探测幂等)
+- **两个治理工具**(11→13):`search_knowledge`(RAG 语义检索,category 可选过滤,跨租户不可见)+ `get_order_status`(确定性模拟 OMS 数据源:订单状态/物流轨迹/支付状态/退款资格,未知单号返回 found=false 不抛错)
+- **node_support 融合铁律(PRD §7.11)**:订单事实一律 get_order_status 工具、政策引用一律 search_knowledge RAG;LLM 只起草,代码做硬保证——(a)`_etas_in` 抽取草稿中一切时效表述,与工具 eta_text 不一致即判冲突,**整稿弃用回退确定性模板**(工具实时数据不可被知识库覆盖);(b)cited_refs 过滤为 RAG 命中白名单(幻觉引用直接丢弃);(c)草稿过 `_sanitize_llm_copy` 绝对化整形;(d)refund_request 工单强制 escalate(退款必须审批,PRD §14.1)
+- **可观测**:support step detail 带 draft_preview/order_status/eta_text/rag_hits/conflict_check/draft_source(llm|template);决策 support_reply(support_agent),reasoning 写明冲突判定
+- **踩坑:测试库跨用例泄漏**——conftest 的临时 SQLite 文件整个 pytest 会话共享、`init_db` 只 create_all 不清数据,前一用例 seed 的知识会泄漏进后一用例(同租户断言精确相等就翻车)→ 每个用例用独立租户 id;另 `tenants.name` 有 UNIQUE 约束,ensure_tenant 按 id 判存在,同名不同 id 会 IntegrityError → 租户名带 tag
+- **验收**:pytest 58 绿(+6 RAG/订单工具/冲突回退单测,+2 集成:全链路 support 融合 + globex 跨租户不可见);ruff/tsc 干净;真实冒烟 run `09842a44`:support 步骤 engine=llm、rag_hits=3、refs=[POL-RFD-02, POL-EXC-05, FAQ-02] 全部命中白名单、conflict_check 无冲突,决策与双工具审计落 PG
+- **演示冲突路径**:FAQ-01 写通用时效 7-10 个工作日而 ord_88123 实时 3-5——LLM 若抄了通用值,`_etas_in` 判冲突弃稿回退模板,单测 `test_support_conflict_falls_back_to_template` 固化该行为
+
 ## 后续里程碑速查
 
-M5 真实人工审批 ✅(见上) · M6 Support RAG · M7 BadCase 红队 · M8 前端五页打磨(可观测面板三视图 + 审批中心已完成)。
+M6 客服 RAG ✅(见上) · M7 BadCase 红队 · M8 前端五页打磨(可观测面板三视图 + 审批中心已完成)。
 
 ## 验证命令
 

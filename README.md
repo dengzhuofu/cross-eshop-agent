@@ -2,7 +2,7 @@
 
 面向中小跨境卖家的多租户 Agent 运营平台：选品研究 → 利润测算 → 供应商评估 → go/no-go 决策闸门 → 多平台 Listing 生成（生成-评审-重写闭环）→ 人工审批 → 模拟发布 → 运营监控 → 客服售后 → 复盘回流。
 
-> 当前进度：**M5 已完成**。M0 行走骨架 → M1 工具治理层 → M2 LLM 接入（SiliconFlow/DeepSeek-V3.2）→ M3 三角真身（profit/supplier 数据工具化、critic LLM 审查、image brief 工具化）→ M4 长期记忆双线（供应商风险检索降权 / 复盘经验回写，租户隔离）+ 上下文压缩接缝 + token 硬熔断 → M5 真实人工审批（LangGraph interrupt/resume + SqliteSaver 检查点 + 审批中心前端）。核心设计：**LLM 只提议，代码做硬保证**——评分封顶、平台规则整形、绝对化措辞生成端改写（CLAIM_HEDGE_MAP）、critic 分级拦截（high 阻塞重写 / medium 仅记录）、决策 rubric 优先级全由确定性代码兜底；无 key 自动降级 stub/hash 引擎，测试 CI 零出网。
+> 当前进度：**M6 已完成**。M0 行走骨架 → M1 工具治理层 → M2 LLM 接入（SiliconFlow/DeepSeek-V3.2）→ M3 三角真身（profit/supplier 数据工具化、critic LLM 审查、image brief 工具化）→ M4 长期记忆双线（供应商风险检索降权 / 复盘经验回写，租户隔离）+ 上下文压缩接缝 + token 硬熔断 → M5 真实人工审批（LangGraph interrupt/resume + SqliteSaver 检查点 + 审批中心前端）→ M6 客服 RAG（五类知识集合 + search_knowledge/get_order_status 治理工具 + 融合铁律：草稿时效与工具冲突即弃稿回退）。核心设计：**LLM 只提议，代码做硬保证**——评分封顶、平台规则整形、绝对化措辞生成端改写（CLAIM_HEDGE_MAP）、critic 分级拦截（high 阻塞重写 / medium 仅记录）、决策 rubric 优先级、RAG 与工具冲突以工具为准，全由确定性代码兜底；无 key 自动降级 stub/hash 引擎，测试 CI 零出网。
 
 ## 快速开始
 
@@ -72,10 +72,10 @@ backend/src/app/
 ├── tools/                     # typed tools：注册中心 + ToolExecutor 唯一调用通道
 │   ├── registry.py            #   ToolDefinition（schema/风险/幂等/审批/超时）
 │   ├── executor.py            #   校验→跨租户检测→审批门→幂等回放→超时→审计（handler 异常统一包装）
-│   └── catalog/               #   11 个治理工具：marketplace/research/profit/supplier/media/memory
+│   └── catalog/               #   13 个治理工具：marketplace/research/profit/supplier/media/memory/knowledge/order
 ├── llm/                       # SiliconFlow 客户端（重试/usage/JSON 提取/门控）+ embeddings（bge-m3 1024 维，无 key 降级确定性 hash）
 ├── persistence/               # SQLAlchemy 模型与仓储 —— workflow 状态唯一真源
-│   └── migrations/            # alembic（0001 业务表 + 0002 memories 记忆表）
+│   └── migrations/            # alembic（0001 业务表 + 0002 memories 记忆表 + 0003 knowledge_base 知识库）
 ├── observability/recorder.py  # RunRecorder：节点→WorkflowStep/AgentDecision 的唯一写入口
 ├── multitenancy/              # TenantContext 注入（铁律：tenant_id 永远系统注入）
 ├── domain/                    # 业务枚举（状态机/风险等级/决策类型/BadCase 八类）
@@ -108,6 +108,7 @@ ruff check src tests scripts
 | M3 | 三角真身(下)：profit/supplier 走治理工具（佣金率取自 adapter）+ critic LLM 审查（high 阻塞/medium 记录的分级拦截）+ generate_image_brief 工具化 + ToolHandlerError 包装 | ✅ |
 | M4 | 长期记忆双线：retrieve/record_memory 治理工具（bge-m3 嵌入，无 key 降级 hash；租户隔离）+ supplier 风险记忆检索降权 / 复盘经验回写 + 绝对化措辞生成端改写（收敛硬保证）+ 上下文压缩接缝 + token 硬熔断 | ✅ |
 | M5 | 真实人工审批：LangGraph `interrupt()`/`Command(resume)` + AsyncSqliteSaver 检查点（`.localdata/checkpoints.db`，仅作恢复非真源）+ 审批快照落库（`pending_approval`）+ `GET /approvals` / `POST /workflows/{id}/approval` + 前端审批中心（角标/快照卡/通过驳回/附言入审计）+ 按工作流 auto_approve 覆盖 | ✅ |
+| M6 | 客服 RAG：`knowledge_base` 表（迁移 0003，五类知识 policy/platform_rule/product_info/faq/script，租户隔离）+ `search_knowledge` / `get_order_status` 治理工具（工具数 11→13）+ node_support 融合铁律（订单事实走工具、政策引用走 RAG、草稿时效与工具 ETA 冲突即整稿弃用回退模板）+ 退款工单强制升级 + seed 脚本 22 条知识（bge-m3） | ✅ |
 | M6 | Support Agent + RAG 五类知识集合 | ⬜ |
 | M7 | Bad Case 三条红队 seed + detector 注册表 + eval CI 门禁 | ⬜ |
 | M8 | Demo 兜底缓存 + 前端五页 + 打磨 | 🔶 可观测面板已提前落地（列表/创建/详情三视图） |
