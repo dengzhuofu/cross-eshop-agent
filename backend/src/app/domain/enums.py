@@ -39,6 +39,7 @@ class AgentDecisionType(str, Enum):
     go_no_go = "go_no_go"
     rewrite = "rewrite"
     auto_approval = "auto_approval"  # 仅 dev 模式；M5 起由人工审批取代
+    human_approval = "human_approval"  # M5：Approval Center 的人工通过/驳回
     supplier_reselect = "supplier_reselect"
     replan = "replan"
     ops_suggestion = "ops_suggestion"

@@ -10,8 +10,11 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite+aiosqlite:///./demo.db"
 
-    # M0 demo 开关（M5 接入真实审批 interrupt 后 AUTO_APPROVE 下线）
+    # M0 demo 开关（M5 起支持工作流级 auto_approve=false 覆盖，走 interrupt 人工审批）
     auto_approve: bool = True
+    # M5 interrupt/resume 的断点存储（checkpointer 只管恢复，不是状态真源——v1.4 §2.3 规则2；
+    # 独立 sqlite 文件避免与业务库耦合，进程重启后待审工作流仍可批）
+    checkpoint_db_path: str = ".localdata/checkpoints.db"
     evidence_threshold: float = 0.7
     max_research_rounds: int = 2
     max_critique_rounds: int = 3

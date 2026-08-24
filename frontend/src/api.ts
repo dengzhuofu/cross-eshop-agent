@@ -4,6 +4,9 @@ import type {
   WorkflowDetailData,
   WorkflowSummary,
   TraceResponse,
+  ApprovalQueueItem,
+  ApprovalRequestPayload,
+  ApprovalResult,
 } from './types';
 
 /** 非 2xx 响应抛出的错误,携带状态码与后端 detail 信息。 */
@@ -88,5 +91,21 @@ export class ApiClient {
   /** GET /api/v1/workflows/{id}/trace — 步骤 / 决策 / 工具调用全量轨迹 */
   getTrace(id: string): Promise<TraceResponse> {
     return this.request<TraceResponse>(`/api/v1/workflows/${id}/trace`);
+  }
+
+  /** GET /api/v1/approvals?limit=20 — 当前租户待人工审批的工作流队列(HITL) */
+  listApprovals(limit = 20): Promise<{ items: ApprovalQueueItem[] }> {
+    return this.request<{ items: ApprovalQueueItem[] }>(`/api/v1/approvals?limit=${limit}`);
+  }
+
+  /**
+   * POST /api/v1/workflows/{id}/approval — 提交人工决策(通过 / 驳回)。
+   * 409 表示工作流已不在待审状态(可能已被处理),由调用方刷新列表即可。
+   */
+  submitApproval(id: string, payload: ApprovalRequestPayload): Promise<ApprovalResult> {
+    return this.request<ApprovalResult>(`/api/v1/workflows/${id}/approval`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
   }
 }

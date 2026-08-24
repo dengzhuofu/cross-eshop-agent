@@ -24,6 +24,8 @@ export interface WorkflowCreatePayload {
   marketplaces: Marketplace[];
   target_market: TargetMarket;
   risk_preference: RiskPreference;
+  /** 是否自动审批:缺省 true;false 时工作流在发布前挂起等待人工审批(HITL) */
+  auto_approve?: boolean;
 }
 
 /** POST /api/v1/workflows 响应体 */
@@ -31,6 +33,49 @@ export interface WorkflowCreated {
   id: string;
   status: string;
   title: string;
+}
+
+/** GET /api/v1/approvals?limit=20 列表项中单个平台的 Listing 草稿预览 */
+export interface ApprovalListing {
+  marketplace: string;
+  title: string;
+  bullets: string[];
+  claim: string;
+}
+
+/** GET /api/v1/approvals 列表项携带的待审上下文(决策门产出的快照) */
+export interface PendingApproval {
+  /** 利润率小数(如 0.2541 → 展示为 25.41%) */
+  margin_pct: number;
+  primary_supplier: string;
+  risk_flags: string[];
+  critique_rounds: number;
+  listings: ApprovalListing[];
+}
+
+/** GET /api/v1/approvals?limit=20 列表项 */
+export interface ApprovalQueueItem {
+  id: string;
+  title: string;
+  product_idea: string;
+  marketplaces: string[];
+  created_at: string;
+  pending_approval: PendingApproval;
+}
+
+/** POST /api/v1/workflows/{id}/approval 的人工决策 */
+export type ApprovalDecision = 'approve' | 'reject';
+
+/** POST /api/v1/workflows/{id}/approval 请求体 */
+export interface ApprovalRequestPayload {
+  decision: ApprovalDecision;
+  comment: string;
+}
+
+/** POST /api/v1/workflows/{id}/approval 响应体(409 = 已不在待审状态) */
+export interface ApprovalResult {
+  id: string;
+  status: string;
 }
 
 /** GET /api/v1/workflows/{id} */

@@ -44,6 +44,7 @@ class ProductLaunchState(TypedDict, total=False):
     critique_rounds: int
 
     approved: bool
+    approval_decision: Dict[str, Any]  # M5：人工审批结果 {approved, comment}（halted 节点消费）
 
     # LLM 计量（PRD §17 接缝：M2 累计 + 阈值告警日志，M4 接预算控制器）
     llm_usage: Dict[str, Any]

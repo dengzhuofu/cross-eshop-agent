@@ -84,9 +84,22 @@
 - **可观测性**:critic step detail 现带 blocking_issues 原文(LLM issue 键是 "issue" 不是 "phrase",取值要兜底)
 - **测试 46 个全绿**(+6 M4 工具/嵌入单测,+2 sanitizer);ruff 干净
 
+## ✅ M5 真实人工审批 HITL:interrupt/resume + 审批中心(已完成,浏览器端到端验收通过)
+
+- **机制**:node_approval_check 在 manual 模式下调 LangGraph `interrupt(payload)`,图挂起、状态置 `awaiting_approval`,审批快照(margin/主供应商/风险旗标/各平台 Listing 草稿)双写 `workflows.result_json.pending_approval`(检查点只是恢复手段,不是真源——v1.4 §2.3 规则 2);`POST /workflows/{id}/approval` 用 `Command(resume=...)` 唤醒,approve→继续 publish×2→复盘,reject→halted(驳回理由入 halted detail),全程步骤/决策照常落审计
+- **检查点**:`AsyncSqliteSaver`(`.localdata/checkpoints.db`,gitignore),FastAPI lifespan 里 `async with from_conn_string` 包住 app 生命周期;thread_id=workflow_id。**resume 会从被 interrupt 的节点头部重跑** → interrupt() 必须放在该节点一切副作用之前
+- **按工作流覆盖**:task_input.auto_approve=false 可在全局 AUTO_APPROVE=true 时仍走人工闸门,不用重启服务
+- **API**:`GET /api/v1/approvals`(跨工作流过滤 awaiting_approval 队列)+ `POST /workflows/{id}/approval`(404 跨租户/不存在、409 重复审批);审批附言随决策写入审计(human_approval 决策,agent=human_approver)
+- **前端审批中心**:导航角标(待审数)、快照卡(利润率/供应商/风险旗标红条/双平台 Listing 预览)、附言输入 + 通过/驳回,409 已处理;创建表单新增「发布前需人工审批」勾选(auto_approve 取反下发)
+- **踩坑①:_finalize 曾无条件置 completed**——gate LLM 合规选 revise 导致流程在 listing 前就 halted,复盘不存在却被标"已完成" → _finalize 改为仅当 final_state 有 retrospective 才置 completed,halted/abort/reject 保持 recorder 终态
+- **踩坑②:resume 丢 recorder**——`Command(resume)` 的 config 忘带 recorder,恢复段审计静默落 NullRecorder → resume config 必须与首次 ainvoke 同样传 `{"recorder": rec, "thread_id": ...}`
+- **踩坑③:AsyncSqliteSaver 连接生命周期**——测试里 suspend 与 resume 必须在同一个 `async with` 连接内(自建 harness contextmanager);服务端 .localdata 目录不存在会启动即挂,lifespan 先 mkdir
+- **验收**:pytest 50 绿(+4 HITL 集成:挂起快照/通过发布/驳回取消/双路径 auto_approve);浏览器实测 acme 租户:角标 1→卡片区→附言「利润率与供应商风险均在阈值内」→通过→resume→completed,trace 16 步含 approval_check(manual_pending)→approval_check(human, approved=true, comment 原文)→publish×2,决策含 human_approver→approve;驳回路径此前 API 级已验(cancelled + 理由入 halted + publish 0 次);IDOR 404 / 409 双审均已验
+- **已知非缺陷**:决策门 LLM 对弱证据选题可能自评 0.55~0.60 选 revise → 流程在 listing 前合法 halted(系统按设计保守);换选题即可演示
+
 ## 后续里程碑速查
 
-M4 记忆双线(pgvector)+上下文压缩+token硬熔断 ✅(见上,pgvector 换成 JSONB+Python 余弦等价实现) · M5 HITL interrupt · M6 Support RAG · M7 BadCase 红队 · M8 前端五页打磨(可观测面板三视图已完成)。
+M5 真实人工审批 ✅(见上) · M6 Support RAG · M7 BadCase 红队 · M8 前端五页打磨(可观测面板三视图 + 审批中心已完成)。
 
 ## 验证命令
 

@@ -14,6 +14,7 @@ import time
 from typing import Any, Dict, List
 
 from langchain_core.runnables import RunnableConfig
+from langgraph.types import interrupt
 
 from app.config import get_settings
 from app.domain.enums import AgentDecisionType, WorkflowStatus
@@ -942,21 +943,66 @@ async def node_critic(state: Dict[str, Any], config: RunnableConfig) -> Dict[str
 
 
 async def node_approval_check(state: Dict[str, Any], config: RunnableConfig) -> Dict[str, Any]:
-    """高风险动作闸门。AUTO_APPROVE=true 仅限 M0 dev 演示；M5 替换为 interrupt() 人工审批。"""
+    """高风险动作闸门（PRD §7.8/§14.1：发布动作必须人工审批）。
+
+    M5 两条路径：
+    - dev 自动放行：AUTO_APPROVE=true（或该工作流 task_input.auto_approve 显式覆盖）；
+    - 真实 HITL：langgraph interrupt() 挂起图执行，把审批材料放进 payload；
+      Approval Center 经 API 以 Command(resume=...) 回填人工决定后图才继续。
+    注意 LangGraph 恢复语义：resume 后本节点会从头重跑，interrupt() 必须位于
+    全部副作用之前——挂起期间的 status/step 落库由 API 层在检测到 __interrupt__ 时做。
+    """
     rec = recorder_from_config(config)
-    await rec.status(WorkflowStatus.awaiting_approval.value)
-    if get_settings().auto_approve:
-        await rec.step("approval_check", detail={"mode": "auto_approve(dev)"})
-        await rec.decision(
-            agent="system",
-            decision_type=AgentDecisionType.auto_approval.value,
-            reasoning="AUTO_APPROVE=true 的 dev 演示模式自动放行；生产路径必须人工审批（PRD §7.8）",
-            chosen_option="approve",
+    per_workflow = (state.get("task_input") or {}).get("auto_approve")
+    auto = get_settings().auto_approve if per_workflow is None else bool(per_workflow)
+
+    if not auto:
+        decision = interrupt(
+            {
+                "reason": "高风险发布动作：多平台 listing 上架需人工确认",
+                "product_idea": (state.get("task_input") or {}).get("product_idea"),
+                "margin_pct": (state.get("profit") or {}).get("margin_pct"),
+                "primary_supplier": (state.get("suppliers") or {}).get("primary"),
+                "risk_flags": (state.get("suppliers") or {}).get("risk_flags"),
+                "critique_rounds": state.get("critique_rounds", 0),
+                "listings": [
+                    {
+                        "marketplace": d.get("marketplace"),
+                        "title": d.get("title"),
+                        "bullets": d.get("bullets"),
+                        "claim": d.get("claim"),
+                    }
+                    for d in (state.get("listings") or [])
+                ],
+            }
         )
-        return {"approved": True}
-    # M5 接入点：此处将调用 langgraph interrupt() 暂停等待 Approval Center 的人工决定
-    await rec.step("approval_check", status="blocked", detail={"mode": "manual_pending(M5)"})
-    return {"approved": False}
+        approved = bool(decision.get("approved"))
+        comment = str(decision.get("comment") or "")
+        await rec.step(
+            "approval_check",
+            detail={"mode": "human", "approved": approved, "comment": comment[:200]},
+        )
+        await rec.decision(
+            agent="human_approver",
+            decision_type=AgentDecisionType.human_approval.value,
+            reasoning=f"人工{'通过' if approved else '驳回'}；附言：{comment or '（无）'}",
+            chosen_option="approve" if approved else "reject",
+            alternatives=["reject"] if approved else ["approve"],
+        )
+        return {
+            "approved": approved,
+            "approval_decision": {"approved": approved, "comment": comment},
+        }
+
+    await rec.status(WorkflowStatus.awaiting_approval.value)
+    await rec.step("approval_check", detail={"mode": "auto_approve(dev)"})
+    await rec.decision(
+        agent="system",
+        decision_type=AgentDecisionType.auto_approval.value,
+        reasoning="AUTO_APPROVE=true 的 dev 演示模式自动放行；生产路径必须人工审批（PRD §7.8）",
+        chosen_option="approve",
+    )
+    return {"approved": True}
 
 
 async def node_publish(state: Dict[str, Any], config: RunnableConfig) -> Dict[str, Any]:
@@ -1136,16 +1182,17 @@ async def node_retrospective(state: Dict[str, Any], config: RunnableConfig) -> D
 
 async def node_halted(state: Dict[str, Any], config: RunnableConfig) -> Dict[str, Any]:
     rec = recorder_from_config(config)
-    status = (
-        WorkflowStatus.cancelled.value
-        if state.get("go_no_go") == "abort"
-        else WorkflowStatus.blocked.value
-    )
-    reason = (
-        "go/no-go 决策为 abort"
-        if state.get("go_no_go") == "abort"
-        else "等待人工审批（AUTO_APPROVE=false 且 M5 未接入 interrupt/resume）"
-    )
+    approval = state.get("approval_decision") or {}
+    if state.get("go_no_go") == "abort":
+        status = WorkflowStatus.cancelled.value
+        reason = "go/no-go 决策为 abort"
+    elif approval and not approval.get("approved"):
+        # M5：人工驳回走 cancelled，附言进审计
+        status = WorkflowStatus.cancelled.value
+        reason = f"人工驳回发布申请：{approval.get('comment') or '（无附言）'}"
+    else:
+        status = WorkflowStatus.blocked.value
+        reason = "流程被阻断（无放行条件命中）"
     await rec.status(status, error=None if status == "cancelled" else reason)
     await rec.step("halted", status=status, detail={"reason": reason})
     return {}

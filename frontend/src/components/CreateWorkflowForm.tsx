@@ -27,6 +27,8 @@ export default function CreateWorkflowForm({ client, onCreated, onCancel }: Prop
   const [marketplaces, setMarketplaces] = useState<Marketplace[]>(['amazon', 'tiktok_shop']);
   const [targetMarket, setTargetMarket] = useState<TargetMarket>('US');
   const [riskPreference, setRiskPreference] = useState<RiskPreference>('balanced');
+  // 勾选后请求体带 auto_approve:false,工作流将在发布前挂起等待人工审批(HITL)
+  const [manualApprove, setManualApprove] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -52,6 +54,7 @@ export default function CreateWorkflowForm({ client, onCreated, onCancel }: Prop
         marketplaces,
         target_market: targetMarket,
         risk_preference: riskPreference,
+        auto_approve: !manualApprove,
       });
       onCreated(wf.id);
     } catch (err) {
@@ -115,6 +118,18 @@ export default function CreateWorkflowForm({ client, onCreated, onCancel }: Prop
                 </option>
               ))}
             </select>
+          </label>
+        </div>
+
+        <div className="field">
+          <span className="field-label">审批策略 auto_approve</span>
+          <label className={`check-item${manualApprove ? ' checked' : ''}`}>
+            <input
+              type="checkbox"
+              checked={manualApprove}
+              onChange={(e) => setManualApprove(e.target.checked)}
+            />
+            发布前需人工审批
           </label>
         </div>
       </div>

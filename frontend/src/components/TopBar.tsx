@@ -8,10 +8,12 @@ interface Props {
   view: AppView;
   onViewChange: (view: AppView) => void;
   backendOk: boolean | null;
+  /** 待人工审批数量(null = 未加载,不显示徽标) */
+  approvalCount: number | null;
 }
 
 /** 顶栏:品牌区 + 租户切换器 + 视图切换 + 后端健康指示灯 */
-export default function TopBar({ tenants, tenantId, onTenantChange, view, onViewChange, backendOk }: Props) {
+export default function TopBar({ tenants, tenantId, onTenantChange, view, onViewChange, backendOk, approvalCount }: Props) {
   return (
     <header className="topbar">
       <div className="topbar-inner">
@@ -52,6 +54,13 @@ export default function TopBar({ tenants, tenantId, onTenantChange, view, onView
             onClick={() => view.kind === 'detail' && onViewChange(view)}
           >
             运行详情
+          </button>
+          <button
+            className={`tab${view.kind === 'approvals' ? ' active' : ''}`}
+            onClick={() => onViewChange({ kind: 'approvals' })}
+          >
+            审批中心
+            {approvalCount !== null && approvalCount > 0 && <span className="tab-badge">{approvalCount}</span>}
           </button>
         </nav>
 

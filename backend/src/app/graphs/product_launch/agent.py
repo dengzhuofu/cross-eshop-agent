@@ -14,7 +14,7 @@ from app.graphs.product_launch import edges, nodes
 from app.graphs.product_launch.state import ProductLaunchState
 
 
-def build_graph():
+def build_graph(checkpointer=None):
     g = StateGraph(ProductLaunchState)
 
     g.add_node("planner", nodes.node_planner)
@@ -53,7 +53,9 @@ def build_graph():
     g.add_edge("support", "retrospective")
     g.add_edge("retrospective", END)
     g.add_edge("halted", END)
-    return g.compile()
+    # M5：FastAPI 运行时传入 AsyncSqliteSaver（interrupt/resume 需要 checkpointer 持久化断点）；
+    # langgraph dev / 无参场景不传（auto_approve 路径不产生 interrupt）
+    return g.compile(checkpointer=checkpointer) if checkpointer is not None else g.compile()
 
 
 graph = build_graph()

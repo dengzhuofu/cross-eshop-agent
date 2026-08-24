@@ -16,7 +16,7 @@ export const WORKFLOW_STATUS_LABELS: Record<string, string> = {
   decision_gate: '决策门',
   drafting_listings: 'Listing 生成',
   critique_loop: '审查重写',
-  awaiting_approval: '待审批',
+  awaiting_approval: '待人工审批',
   executing: '发布执行',
   monitoring: '运营监控',
   handling_support: '客服处理',
@@ -53,6 +53,7 @@ export const DECISION_TYPE_LABELS: Record<string, string> = {
   go_no_go: '取舍决策(go/no-go)',
   rewrite: '打回重写',
   auto_approval: '自动审批',
+  human_approval: '人工审批',
   supplier_reselect: '供应商重选',
   replan: '重规划',
   ops_suggestion: '运营建议',
@@ -83,6 +84,11 @@ export const STEP_STATUS_LABELS: Record<string, string> = {
   skipped: '已跳过',
   error: '出错',
   failed: '失败',
+};
+
+/** Agent 名 → 中文(human_approver 为 HITL 人工审批者) */
+export const AGENT_LABELS: Record<string, string> = {
+  human_approver: '人工审批者',
 };
 
 /** 渠道显示名 */
@@ -179,6 +185,11 @@ export function statusLabel(status: string | null | undefined): string {
 export function nodeLabel(node: string | null | undefined): string {
   if (!node) return '—';
   return NODE_LABELS[node] ?? node;
+}
+
+export function agentLabel(agent: string | null | undefined): string {
+  if (!agent) return '—';
+  return AGENT_LABELS[agent] ?? agent;
 }
 
 export function formatLatency(ms: number | null | undefined): string {

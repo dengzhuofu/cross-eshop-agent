@@ -2,7 +2,7 @@
 
 面向中小跨境卖家的多租户 Agent 运营平台：选品研究 → 利润测算 → 供应商评估 → go/no-go 决策闸门 → 多平台 Listing 生成（生成-评审-重写闭环）→ 人工审批 → 模拟发布 → 运营监控 → 客服售后 → 复盘回流。
 
-> 当前进度：**M4 已完成**。M0 行走骨架 → M1 工具治理层 → M2 LLM 接入（SiliconFlow/DeepSeek-V3.2）→ M3 三角真身（profit/supplier 数据工具化、critic LLM 审查、image brief 工具化）→ M4 长期记忆双线（供应商风险检索降权 / 复盘经验回写，租户隔离）+ 上下文压缩接缝 + token 硬熔断。核心设计：**LLM 只提议，代码做硬保证**——评分封顶、平台规则整形、绝对化措辞生成端改写（CLAIM_HEDGE_MAP）、critic 分级拦截（high 阻塞重写 / medium 仅记录）、决策 rubric 优先级全由确定性代码兜底；无 key 自动降级 stub/hash 引擎，测试 CI 零出网。
+> 当前进度：**M5 已完成**。M0 行走骨架 → M1 工具治理层 → M2 LLM 接入（SiliconFlow/DeepSeek-V3.2）→ M3 三角真身（profit/supplier 数据工具化、critic LLM 审查、image brief 工具化）→ M4 长期记忆双线（供应商风险检索降权 / 复盘经验回写，租户隔离）+ 上下文压缩接缝 + token 硬熔断 → M5 真实人工审批（LangGraph interrupt/resume + SqliteSaver 检查点 + 审批中心前端）。核心设计：**LLM 只提议，代码做硬保证**——评分封顶、平台规则整形、绝对化措辞生成端改写（CLAIM_HEDGE_MAP）、critic 分级拦截（high 阻塞重写 / medium 仅记录）、决策 rubric 优先级全由确定性代码兜底；无 key 自动降级 stub/hash 引擎，测试 CI 零出网。
 
 ## 快速开始
 
@@ -56,7 +56,7 @@ npm install
 npm run dev        # http://localhost:5173（vite 代理 /api → 127.0.0.1:8000）
 ```
 
-功能：租户切换（数据隔离直观可见）· 工作流列表与创建表单 · 运行详情页（步骤时间线 / Agent 决策卡片流 / 工具调用审计表），非终态自动 1.5s 轮询。深色仪表盘风格，零组件库。
+功能：租户切换（数据隔离直观可见）· 工作流列表与创建表单（含「发布前需人工审批」勾选）· 运行详情页（步骤时间线 / Agent 决策卡片流 / 工具调用审计表）· 审批中心（HITL 挂起队列 + 角标 + Listing 快照预览 + 通过/驳回与附言审计），非终态自动 1.5s 轮询。深色仪表盘风格，零组件库。
 
 ## 架构速览
 
@@ -107,7 +107,7 @@ ruff check src tests scripts
 | M2 | 三角真身(上)：SiliconFlow 接入 + research 证据评分/深化回路 + go/no-go LLM 决策 + Listing 三平台 LLM 文案（critic 约束回注重写）| ✅ |
 | M3 | 三角真身(下)：profit/supplier 走治理工具（佣金率取自 adapter）+ critic LLM 审查（high 阻塞/medium 记录的分级拦截）+ generate_image_brief 工具化 + ToolHandlerError 包装 | ✅ |
 | M4 | 长期记忆双线：retrieve/record_memory 治理工具（bge-m3 嵌入，无 key 降级 hash；租户隔离）+ supplier 风险记忆检索降权 / 复盘经验回写 + 绝对化措辞生成端改写（收敛硬保证）+ 上下文压缩接缝 + token 硬熔断 | ✅ |
-| M5 | 真实人工审批：LangGraph interrupt/resume + Approval Center | ⬜ |
+| M5 | 真实人工审批：LangGraph `interrupt()`/`Command(resume)` + AsyncSqliteSaver 检查点（`.localdata/checkpoints.db`，仅作恢复非真源）+ 审批快照落库（`pending_approval`）+ `GET /approvals` / `POST /workflows/{id}/approval` + 前端审批中心（角标/快照卡/通过驳回/附言入审计）+ 按工作流 auto_approve 覆盖 | ✅ |
 | M6 | Support Agent + RAG 五类知识集合 | ⬜ |
 | M7 | Bad Case 三条红队 seed + detector 注册表 + eval CI 门禁 | ⬜ |
 | M8 | Demo 兜底缓存 + 前端五页 + 打磨 | 🔶 可观测面板已提前落地（列表/创建/详情三视图） |
