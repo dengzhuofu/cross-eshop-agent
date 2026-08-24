@@ -45,6 +45,16 @@ python -m langgraph dev   # 需要 langgraph-cli[inmem]
 
 重置演示数据：`python scripts/reset_demo.py`
 
+## 前端可观测面板
+
+```bash
+cd frontend
+npm install
+npm run dev        # http://localhost:5173（vite 代理 /api → 127.0.0.1:8000）
+```
+
+功能：租户切换（数据隔离直观可见）· 工作流列表与创建表单 · 运行详情页（步骤时间线 / Agent 决策卡片流 / 工具调用审计表），非终态自动 1.5s 轮询。深色仪表盘风格，零组件库。
+
 ## 架构速览
 
 ```
@@ -96,7 +106,7 @@ ruff check src tests scripts
 | M5 | 真实人工审批：LangGraph interrupt/resume + Approval Center | ⬜ |
 | M6 | Support Agent + RAG 五类知识集合 | ⬜ |
 | M7 | Bad Case 三条红队 seed + detector 注册表 + eval CI 门禁 | ⬜ |
-| M8 | Demo 兜底缓存 + 前端五页 + 打磨 | ⬜ |
+| M8 | Demo 兜底缓存 + 前端五页 + 打磨 | 🔶 可观测面板已提前落地（列表/创建/详情三视图） |
 
 ## 设计文档
 

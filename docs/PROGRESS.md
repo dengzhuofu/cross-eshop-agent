@@ -41,9 +41,18 @@
 
 SiliconFlow 接入:research/listing 节点换真 LLM(typed tools: search_market_trends 等 stub 化数据源)、go/no-go 由 Planner 结合 rubric 决策、决策 reasoning 用 LLM 生成但仍写 AgentDecision 表。注意 SILICONFLOW_API_KEY 只进 .env,永不入库入 git。
 
+## ✅ 前端可观测面板(已提前落地,浏览器实测通过)
+
+- `frontend/`:Vite + React + TS,零组件库,手写深色主题(#0d1117);vite proxy `/api`、`/healthz` → 127.0.0.1:8000(前端代码只用相对路径)
+- 三视图:列表(表格+刷新+新建)、创建表单(idea/三渠道复选/市场/风险偏好)、详情(状态徽章+非终态 1.5s 轮询(setTimeout 链式防堆积)+步骤时间线(detail 可折叠 JSON)+决策卡片流(类型色条+最终选择 vs 备选)+工具审计表(风险/状态/幂等键))
+- 顶部租户切换器(切换即重建 ApiClient 回列表)+ /healthz 在线指示灯;`src/labels.ts` 集中维护 21 状态/13 节点/9 决策类型的中文映射
+- 浏览器实测:列表渲染真数据✅、详情三区块✅、表单创建「磁吸式桌面理线器」→轮询到 completed✅(新审计行幂等键正确)、切 Globex 看到空列表(隔离可视化)✅
+- 启动:`cd frontend && npm run dev` → http://localhost:5173;构建 `npm run build`(tsc 零错误)
+- 注意:Playwright locator click 在该 IAB 上会超时(fill 正常),浏览器操作用 dom_cua 节点路径或 cua 坐标(截图坐标是缩放过的,需按视口换算)
+
 ## 后续里程碑速查
 
-M3 利润/供应商真实现 · M4 记忆双线(pgvector)+上下文压缩+token计量 · M5 HITL interrupt · M6 Support RAG · M7 BadCase 红队 · M8 前端五页打磨。前端可视化面板(frontend/,Vite+React)已另行开工:列表/创建/详情三视图,展示步骤时间线+决策卡片流+工具审计表,vite proxy 到 :8000。
+M3 利润/供应商真实现 · M4 记忆双线(pgvector)+上下文压缩+token计量 · M5 HITL interrupt · M6 Support RAG · M7 BadCase 红队 · M8 前端五页打磨(可观测面板三视图已提前完成,见上节)。
 
 ## 验证命令
 
