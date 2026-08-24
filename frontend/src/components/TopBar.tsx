@@ -62,6 +62,12 @@ export default function TopBar({ tenants, tenantId, onTenantChange, view, onView
             审批中心
             {approvalCount !== null && approvalCount > 0 && <span className="tab-badge">{approvalCount}</span>}
           </button>
+          <button
+            className={`tab${view.kind === 'badcases' ? ' active' : ''}`}
+            onClick={() => onViewChange({ kind: 'badcases' })}
+          >
+            Bad Case 面板
+          </button>
         </nav>
 
         <div className="health" title="GET /healthz">

@@ -15,7 +15,15 @@ export default function CollapsibleJson({ data, label = '查看详情' }: { data
 
   return (
     <div className="json-wrap">
-      <button type="button" className="json-toggle" onClick={() => setOpen((v) => !v)}>
+      <button
+        type="button"
+        className="json-toggle"
+        onClick={(e) => {
+          // 嵌套在可点击卡片里时（如 Bad Case 面板），展开/收起不应触发卡片跳转
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+      >
         <span className={`caret${open ? ' open' : ''}`} aria-hidden />
         {open ? '收起详情' : label}
       </button>

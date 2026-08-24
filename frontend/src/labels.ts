@@ -44,6 +44,7 @@ export const NODE_LABELS: Record<string, string> = {
   support: '客服',
   retrospective: '复盘',
   halted: '终止',
+  bad_case_scan: '坏例防线扫描',
 };
 
 /** Agent 决策类型 → 中文 */
@@ -101,6 +102,41 @@ export const MARKETPLACE_LABELS: Record<string, string> = {
   tiktok_shop: 'TikTok Shop',
 };
 
+/** Bad Case 类别 → 中文(PRD 八类防线) */
+export const BADCASE_CATEGORY_LABELS: Record<string, string> = {
+  input_anomaly: '输入异常',
+  output_runaway: '输出失控',
+  calc_anomaly: '计算异常',
+  tool_failure: '工具故障',
+  flow_anomaly: '流程异常',
+  memory_anomaly: '记忆异常',
+  context_anomaly: '上下文异常',
+  biz_violation: '业务违规',
+};
+
+/** Bad Case 处置状态 → 中文 */
+export const BADCASE_STATUS_LABELS: Record<string, string> = {
+  detected: '已检出',
+  quarantined: '已隔离',
+  resolved: '已处置',
+  escalated: '已升级',
+  aborted: '已中止',
+};
+
+/** 坏例检测器 → 中文 */
+export const DETECTOR_LABELS: Record<string, string> = {
+  input_injection: '提示注入',
+  output_absolute_claims: '违禁声明',
+  memory_poisoning: '记忆投毒',
+};
+
+/** bad_case_scan 扫描步骤的 origin → 中文(扫描发生在哪条链路上) */
+export const BADCASE_ORIGIN_LABELS: Record<string, string> = {
+  planner: '选题输入',
+  listing: 'Listing 产出',
+  retrospective: '记忆回写',
+};
+
 /** 两个演示租户(与后端种子数据一致) */
 export const TENANTS: Tenant[] = [
   { id: 't_demo_acme', name: 'Acme Cross-border' },
@@ -154,6 +190,64 @@ export function riskLevelTone(level: string): Tone {
   if (l === 'high') return 'red';
   if (l === 'medium') return 'amber';
   return 'gray';
+}
+
+/** 坏例严重度 → 色调(高=红 / 中=琥珀 / 低=灰) */
+export function badCaseSeverityTone(severity: string): Tone {
+  return riskLevelTone(severity);
+}
+
+/**
+ * 坏例处置状态 → 色调:
+ * 蓝 = 已检出(信息态);琥珀 = 已隔离(已控制但未了结);红 = 已升级(需人工介入);
+ * 绿 = 已处置;灰 = 已中止。
+ */
+export function badCaseStatusTone(status: string): Tone {
+  switch (status.toLowerCase()) {
+    case 'resolved':
+      return 'green';
+    case 'quarantined':
+      return 'amber';
+    case 'escalated':
+      return 'red';
+    case 'detected':
+      return 'blue';
+    default: // aborted 及未知值
+      return 'gray';
+  }
+}
+
+/** 坏例类别 → 色调(仅作轻量区分,严重程度交给 severity 徽标表达) */
+export function badCaseCategoryTone(category: string): Tone {
+  switch (category) {
+    case 'input_anomaly':
+      return 'purple';
+    case 'output_runaway':
+    case 'biz_violation':
+      return 'red';
+    case 'calc_anomaly':
+      return 'amber';
+    case 'tool_failure':
+      return 'teal';
+    case 'memory_anomaly':
+      return 'green';
+    default: // flow_anomaly / context_anomaly
+      return 'blue';
+  }
+}
+
+/** bad_case_scan 扫描来源 → 色调 */
+export function badCaseOriginTone(origin: string): Tone {
+  switch (origin) {
+    case 'planner':
+      return 'blue';
+    case 'listing':
+      return 'purple';
+    case 'retrospective':
+      return 'teal';
+    default:
+      return 'gray';
+  }
 }
 
 /** 决策类型 → 卡片左侧色条颜色(不同类型一眼可辨) */

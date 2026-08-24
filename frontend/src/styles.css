@@ -1198,3 +1198,250 @@ body {
 .value-block:last-child {
   margin-bottom: 0;
 }
+
+/* ---------------- Bad Case 面板 ---------------- */
+
+/* 顶部统计小卡 */
+.badcase-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.stat-card {
+  padding: 14px 18px;
+}
+
+.stat-num {
+  font-family: var(--mono);
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.25;
+  color: var(--text);
+}
+
+.stat-label {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.stat-card.tone-blue .stat-num { color: #79c0ff; }
+.stat-card.tone-red .stat-num { color: #ff7b72; text-shadow: 0 0 12px rgba(248, 81, 73, 0.35); }
+.stat-card.tone-amber .stat-num { color: #e3b341; }
+
+/* 类别筛选 chips(与顶栏租户切换器同语言) */
+.badcase-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.filter-chip {
+  appearance: none;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 5px 13px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  transition: all 0.15s ease;
+}
+
+.filter-chip:hover {
+  color: var(--text);
+  border-color: #4a535e;
+}
+
+.filter-chip.active {
+  color: var(--text);
+  background: rgba(88, 166, 255, 0.12);
+  border-color: rgba(88, 166, 255, 0.55);
+  box-shadow: 0 0 10px rgba(88, 166, 255, 0.15);
+}
+
+.filter-count {
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 16px;
+  min-width: 17px;
+  padding: 0 4px;
+  border-radius: 999px;
+  text-align: center;
+  background: rgba(110, 118, 129, 0.18);
+  color: var(--text-faint);
+}
+
+.filter-chip.active .filter-count {
+  background: rgba(88, 166, 255, 0.22);
+  color: #a5d6ff;
+}
+
+/* 坏例卡片列表 */
+.badcase-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.badcase-card {
+  position: relative;
+  overflow: hidden;
+  padding-left: 22px;
+}
+
+/* 左侧严重度色条(复用 bar-* 配色) */
+.badcase-card::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+}
+
+.badcase-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.badcase-badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.badcase-summary {
+  margin: 10px 0 4px;
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--text);
+}
+
+.badcase-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px dashed var(--border-soft);
+}
+
+.badcase-wfid {
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------------- 坏例防线扫描步骤(bad_case_scan)警示样式 ---------------- */
+
+.tl-item.scan-step .tl-dot {
+  box-shadow: 0 0 0 3px var(--bg), 0 0 10px rgba(248, 81, 73, 0.55);
+}
+
+.tl-body.scan-body {
+  border-color: rgba(248, 81, 73, 0.38);
+  background: linear-gradient(180deg, rgba(248, 81, 73, 0.06), var(--panel-2));
+}
+
+.scan-block {
+  margin-top: 8px;
+}
+
+.scan-origin {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.scan-hit-count {
+  font-size: 11.5px;
+  font-family: var(--mono);
+  color: #ffb0ab;
+}
+
+.scan-hits {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.scan-hit {
+  border: 1px solid rgba(248, 81, 73, 0.28);
+  background: rgba(13, 17, 23, 0.55);
+  border-radius: var(--radius-sm);
+  padding: 9px 12px;
+}
+
+.scan-hit-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.scan-detector {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.scan-detector::before {
+  content: '@';
+  font-family: var(--mono);
+  color: var(--text-faint);
+  margin-right: 2px;
+}
+
+.scan-summary {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--text);
+  word-break: break-word;
+}
+
+/* patterns / phrases 标签化展示(警示色调) */
+.tag-list {
+  list-style: none;
+  margin: 7px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tag {
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.6;
+  color: #ffb0ab;
+  background: rgba(248, 81, 73, 0.09);
+  border: 1px solid rgba(248, 81, 73, 0.35);
+  border-radius: 4px;
+  padding: 1px 7px;
+  word-break: break-all;
+}
+
+.scan-findings {
+  margin-top: 10px;
+}
+
+.scan-findings-text {
+  color: var(--text-dim);
+}

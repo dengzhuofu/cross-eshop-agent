@@ -11,8 +11,11 @@ from sqlalchemy import text
 from app.persistence.db import adispose_database, session_factory
 from app.persistence.migrations import upgrade_head
 
-# 与 migrations/versions/0001 的 downgrade 顺序一致：先子表后父表
+# 与 migrations/versions 0001-0004 的 downgrade 顺序一致：先子表后父表
 TABLES_IN_DROP_ORDER = [
+    "bad_cases",       # 0004（FK → workflows，必须先删）
+    "knowledge_base",  # 0003
+    "memories",        # 0002
     "tool_calls",
     "agent_decisions",
     "workflow_steps",

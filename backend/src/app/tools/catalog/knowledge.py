@@ -17,7 +17,10 @@ class SearchKnowledgeInput(BaseModel):
     query_text: str = Field(min_length=1, description="查询文本，按语义相似度检索知识库")
     category: str | None = Field(
         default=None,
-        description="知识分类过滤：policy/platform_rule/product_info/faq/script；缺省查全部",
+        description=(
+            "知识分类过滤：policy/platform_rule/product_info/faq/script/ops_playbook"
+            "（运营打法，主链路 planner/listing 自用）；缺省查全部"
+        ),
     )
     top_k: int = Field(default=3, ge=1, le=8)
 

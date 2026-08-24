@@ -5,9 +5,16 @@ import TopBar from './components/TopBar';
 import WorkflowList from './components/WorkflowList';
 import WorkflowDetail from './components/WorkflowDetail';
 import ApprovalCenter from './components/ApprovalCenter';
+import BadCasePanel from './components/BadCasePanel';
 
-/** 视图路由:三个视图(列表 / 详情 / 审批中心),无需引入路由库。 */
-export type AppView = { kind: 'list' } | { kind: 'detail'; id: string } | { kind: 'approvals' };
+/**
+ * 视图路由:四个视图(列表 / 详情 / 审批中心 / Bad Case 面板),无需引入路由库。
+ */
+export type AppView =
+  | { kind: 'list' }
+  | { kind: 'detail'; id: string }
+  | { kind: 'approvals' }
+  | { kind: 'badcases' };
 
 export default function App() {
   const [tenantId, setTenantId] = useState<string>(TENANTS[0].id);
@@ -68,6 +75,8 @@ export default function App() {
           <WorkflowList client={client} onOpenDetail={(id) => setView({ kind: 'detail', id })} />
         ) : view.kind === 'detail' ? (
           <WorkflowDetail key={`${tenantId}:${view.id}`} client={client} workflowId={view.id} onBack={() => setView({ kind: 'list' })} />
+        ) : view.kind === 'badcases' ? (
+          <BadCasePanel client={client} onOpenDetail={(id) => setView({ kind: 'detail', id })} />
         ) : (
           <ApprovalCenter client={client} onQueueChange={handleQueueChange} />
         )}

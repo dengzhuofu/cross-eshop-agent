@@ -128,9 +128,11 @@ class MemoryRecord(Base):
 
 
 class KnowledgeRecord(Base):
-    """RAG 知识库（M6 五类知识集合，PRD §7.11）。category: policy / platform_rule /
-    product_info / faq / script，按租户隔离。ref 为文档引用编号（如 POL-RTN-07 v2.1），
-    客服回复草稿的来源引用即引用它。embedding 存储与检索契约同 MemoryRecord。
+    """RAG 知识库（M6 起五类客服知识 + M8 ops_playbook 运营打法，PRD §7.11）。
+    category: policy / platform_rule / product_info / faq / script / ops_playbook，
+    按租户隔离。ref 为文档引用编号（如 POL-RTN-07 v2.1），客服回复草稿的来源
+    引用即引用它；ops_playbook 供主链路 planner/listing 经 search_knowledge 检索。
+    embedding 存储与检索契约同 MemoryRecord。
     """
 
     __tablename__ = "knowledge_base"

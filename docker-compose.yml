@@ -1,0 +1,45 @@
+# 一键起全栈（v1.4 M8「打磨」项）：docker compose up --build 后访问 http://localhost:8088
+# 演示凭据仅为本机演示实例所用（与 scripts/dev_postgres.sh 同一套约定）。
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: cesa
+      POSTGRES_PASSWORD: cesa_secret
+      POSTGRES_DB: crosseshop
+    ports:
+      - "15433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cesa -d crosseshop"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://cesa:cesa_secret@db:5432/crosseshop
+      # 演示模式默认自动放行；要体验 HITL 审批改为 false
+      AUTO_APPROVE: "true"
+      # 不内置 API key：无 key 时全链路走确定性 stub，功能一致零出网。
+      # 如需真 LLM 产出，在 backend/.env 配好后用 `docker compose run` 自行注入，
+      # 或启用 Demo 兜底缓存（DEMO_CACHE_MODE=read + 预热过的缓存文件挂载进容器）。
+      SILICONFLOW_API_KEY: ""
+    depends_on:
+      db:
+        condition: service_healthy
+    command: sh -c "alembic upgrade head && python scripts/seed_mock_data.py && python scripts/seed_knowledge.py && uvicorn app.api.main:app --host 0.0.0.0 --port 8000"
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "8088:80"
+
+volumes:
+  pgdata:

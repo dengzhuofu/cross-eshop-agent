@@ -32,6 +32,15 @@ class Settings(BaseSettings):
     token_alert_threshold: int = 50000
     llm_hard_budget: int = 80000
 
+    # M8 Demo 兜底缓存（v1.4 §1.2：语义缓存不实现，精确-hash 缓存兼做离线演示兜底）。
+    # 三态开关：
+    #   off       —— 直连 LLM，行为与 M2 完全一致（默认）；
+    #   read      —— 只读：命中缓存即离线重放预热的 LLM 产出（配合 key 留空可全离线演示，
+    #                未命中时节点走确定性 stub 兜底）；
+    #   readwrite —— 读 + 写：预热脚本用它把真实 LLM 产出落盘，供日后 read 模式重放。
+    demo_cache_mode: str = "off"
+    demo_cache_path: str = ".localdata/demo_cache.json"
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -213,6 +213,33 @@ def _constraint(state: Dict[str, Any], c: str) -> Dict[str, Any]:
     return sp
 
 
+async def _fetch_ops_knowledge(
+    state: Dict[str, Any],
+    config: RunnableConfig,
+    query: str,
+    *,
+    top_k: int = 2,
+) -> List[Dict[str, Any]]:
+    """M8：主链路外挂 RAG——经治理工具检索运营知识库（ops_playbook 类）。
+
+    检索结果只作为生成侧参考资料（LLM 只提议，硬保证仍在代码）；检索失败
+    不阻断主链路。客服场景的融合铁律不适用于此：这里没有工具实时事实可冲突。
+    """
+    repo = _tool_repo(config)
+    ctx = _tool_ctx(state)
+    try:
+        res = await execute_tool(
+            "search_knowledge",
+            {"query_text": query[:400], "category": "ops_playbook", "top_k": top_k},
+            ctx,
+            repo,
+        )
+        return list((res.output or {}).get("results") or [])
+    except ToolError as exc:
+        logger.warning("search_knowledge failed (non-blocking): %s", exc)
+        return []
+
+
 async def node_planner(state: Dict[str, Any], config: RunnableConfig) -> Dict[str, Any]:
     rec = recorder_from_config(config)
     t0 = time.perf_counter()
@@ -232,6 +259,10 @@ async def node_planner(state: Dict[str, Any], config: RunnableConfig) -> Dict[st
     if idea_hits:
         plan["bad_case_hits"] = len(idea_hits)
         plan["input_scrubbed"] = scrubbed
+    # M8：规划阶段先检索运营打法知识库，把选品方法论/风险清单的引用写进计划留痕
+    ops_kb = await _fetch_ops_knowledge(state, config, f"{cleaned_idea} 选品 运营 打法 风险")
+    if ops_kb:
+        plan["knowledge_refs"] = [h.get("ref") or h.get("title") for h in ops_kb]
     await rec.status(WorkflowStatus.planning.value)
     await rec.step("planner", detail=plan, latency_ms=int((time.perf_counter() - t0) * 1000))
     await rec.decision(
@@ -649,6 +680,8 @@ LISTING_SYSTEM_PROMPT = """你是跨境电商平台的资深 Listing 文案官�
 - title 长度 ≤ {title_max} 字符；bullets 数量在 {bmin}~{bmax} 条之间；
 - claim/bullets 中每句功效表述必须有研究证据支撑，禁止无证据的绝对化承诺（如"保证/100%/最佳"）；
 - {constraint_block}
+- 输入里的 knowledge 是知识库检索到的运营守则参考：可采纳其结构与打法建议，
+  但其中内容不替代研究证据，也不得据此输出绝对化承诺；
 - 语言与风格贴合目标市场。"""
 
 STUB_FLAVOR = {
@@ -665,6 +698,7 @@ async def _listing_via_llm(
     research_brief: Dict[str, Any],
     constraints: List[str],
     usage_acc: Dict[str, int],
+    kb_hits: List[Dict[str, Any]] | None = None,
 ) -> Dict[str, Any] | None:
     """LLM 文案路径。返回字段 dict；任何失败返回 None 由调用方降级。"""
     constraint_block = (
@@ -677,13 +711,23 @@ async def _listing_via_llm(
         "competitor_gap": research_brief.get("competitor_gap"),
         "review_pain_points": research_brief.get("review_pain_points"),
     }
+    # M8：知识库检索到的运营守则以参考资料身份进入提示词（advisory，非硬约束）
+    knowledge_pack = [
+        {"ref": h.get("ref"), "title": h.get("title"), "content": str(h.get("content") or "")[:200]}
+        for h in (kb_hits or [])
+    ]
     parsed, u = await _call_llm_json(
         LISTING_SYSTEM_PROMPT.replace("{title_max}", str(rules.get("title_max_length", 200)))
         .replace("{bmin}", str(rules.get("bullets_min", 0)))
         .replace("{bmax}", str(rules.get("bullets_max", 10)))
         .replace("{constraint_block}", constraint_block),
         json.dumps(
-            {"product": idea, "target_market": market, "evidence": evidence_pack},
+            {
+                "product": idea,
+                "target_market": market,
+                "evidence": evidence_pack,
+                "knowledge": knowledge_pack,
+            },
             ensure_ascii=False,
         ),
         temperature=0.6,
@@ -741,6 +785,7 @@ async def node_listing(state: Dict[str, Any], config: RunnableConfig) -> Dict[st
 
     drafts: List[Dict[str, Any]] = []
     rules_fetched: Dict[str, Any] = {}
+    knowledge_refs: Dict[str, List[Any]] = {}
     sanitized_all: List[str] = []
     for mp in marketplaces:
         bullets = list(STUB_FLAVOR.get(mp, ["Durable foldable storage"]))
@@ -763,12 +808,18 @@ async def node_listing(state: Dict[str, Any], config: RunnableConfig) -> Dict[st
         except ToolError as exc:  # 未知平台等：降级为未整形草稿，留给 critic/人工兜底
             rules_fetched[mp] = {"error": str(exc)}
 
+        # M8：主链路 RAG——按平台检索 Listing 运营守则作为生成参考。stub 路径也检索，
+        # 保证可观测字段在封闭测试下同样可断言
+        kb_hits = await _fetch_ops_knowledge(state, config, f"{idea} {mp} listing 卖点 守则")
+        knowledge_refs[mp] = [h.get("ref") or h.get("title") for h in kb_hits]
+
         # M2：LLM 文案生成（rewrite 轮注入 Critic 约束）；失败降级 stub 文案
         keywords = ["under bed storage", "foldable box", "bedroom organizer"]
         if use_llm:
             try:
                 gen = await _listing_via_llm(
-                    idea, market, rules, research_brief, constraints, usage_acc
+                    idea, market, rules, research_brief, constraints, usage_acc,
+                    kb_hits=kb_hits,
                 )
             except Exception:  # noqa: BLE001
                 logger.exception("listing llm generation failed for %s; fallback stub", mp)
@@ -832,6 +883,7 @@ async def node_listing(state: Dict[str, Any], config: RunnableConfig) -> Dict[st
     if rounds > 0:
         detail["applied_constraints"] = constraints
     detail["rules_fetched_via_tools"] = rules_fetched
+    detail["knowledge_refs"] = knowledge_refs
     # 文案是演示的核心产出，把标题放进 step 详情供 UI 直接展示（完整内容在 listings 状态里）
     detail["titles"] = {d["marketplace"]: d["title"] for d in drafts}
     if sanitized_all:

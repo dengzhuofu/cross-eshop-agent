@@ -1,6 +1,7 @@
 """LLM 接入层（M2）：客户端 + 提示词装配；M4 增加嵌入客户端。"""
 
 from app.llm.client import (  # noqa: F401
+    CachedLlmClient,
     LlmClient,
     LlmError,
     extract_json,

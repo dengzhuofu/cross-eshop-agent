@@ -7,7 +7,15 @@ import type {
   ApprovalQueueItem,
   ApprovalRequestPayload,
   ApprovalResult,
+  BadCase,
 } from './types';
+
+/** GET /api/v1/badcases 的查询参数(全部可选) */
+export interface BadCaseQuery {
+  limit?: number;
+  workflow_id?: string;
+  category?: string;
+}
 
 /** 非 2xx 响应抛出的错误,携带状态码与后端 detail 信息。 */
 export class ApiError extends Error {
@@ -107,5 +115,15 @@ export class ApiClient {
       method: 'POST',
       body: JSON.stringify(payload),
     });
+  }
+
+  /** GET /api/v1/badcases?limit=&workflow_id=&category= — 坏例防线记录(租户头统一注入) */
+  listBadCases(params?: BadCaseQuery): Promise<{ items: BadCase[] }> {
+    const qs = new URLSearchParams();
+    if (params?.limit != null) qs.set('limit', String(params.limit));
+    if (params?.workflow_id) qs.set('workflow_id', params.workflow_id);
+    if (params?.category) qs.set('category', params.category);
+    const query = qs.toString();
+    return this.request<{ items: BadCase[] }>(`/api/v1/badcases${query ? `?${query}` : ''}`);
   }
 }

@@ -117,17 +117,28 @@
 - **踩坑:重复枚举定义**——enums.py 里残留一版旧 BadCaseCategory stub(a_input/b_output 值)排在新版之后把新枚举整个遮蔽,运行时 AttributeError: output_runaway;grep 双定义删旧即愈。测试库泄漏与 tenants.name UNIQUE 两坑同 M6(见上),红队租户同样带 seq 序号
 - **验收**:pytest 62 绿(+3 红队参数化 +1 坏例租户隔离);ruff 干净(含 evals 目录);门禁脚本 3×PASS(注入 seed 检出 A+B 两类、违禁声明 seed 检出 B、投毒 seed 检出 F+B 且复盘无污染)
 
+## ✅ M8 打磨收官:主链路 RAG + Demo 兜底缓存 + 部署 + 前端面板(已完成,77 测试绿,真库+真 LLM 冒烟通过)
+
+- **主链路自用 RAG(用户需求:RAG 不止客服,agent 本身也要外挂知识库)**:知识库新增第 6 类 `ops_playbook`(选品方法论 OPS-SEL-01 / Amazon Listing 守则 OPS-AMZ-LS1 / TikTok 内容电商 OPS-TTS-CM1 / 定价促销 OPS-PRC-ST1 / 旺季备货 OPS-LOG-Q4,共 27 条);planner 规划前检索「选题+选品打法」、listing 每平台检索「平台 Listing 守则」经 `search_knowledge` 治理工具(审计留痕),命中以参考资料身份进生成提示词(advisory,不替代研究证据、不得据此绝对化承诺),refs 写入 step detail `knowledge_refs` 可观测;检索失败不阻断主链路。真库冒烟 run `796996ea`:planner 命中 [OPS-SEL-01, OPS-AMZ-LS1],amazon→OPS-AMZ-LS1 / tiktok_shop→OPS-TTS-CM1 定向正确,4 次检索全审计
+- **Demo 兜底缓存(v1.4 §1.2 接缝)**:`cache/result_cache.py` 定义 `ResultCache` Protocol + MVP 精确 hash 文件实现(原子写,Phase 2 同接口换 embedding 相似度,semantic_cache_entries 表留后置 migration);`CachedLlmClient` 包裹 LLM 客户端,`demo_cache_mode` 三态 off/read/readwrite——预热:`warm_demo_cache.py`(readwrite+真 key 跑 3 条选题),离线演示:无 key+read 命中即重放真实 LLM 产出(0 token),未命中走节点既有 stub 兜底;`llm_enabled()` 在 read 态放行以敢发起命中
+- **部署**:`backend/Dockerfile`(src 布局安装+迁移/种子随镜像)+`frontend/Dockerfile`(vite build→nginx 反代 /api)+`docker-compose.yml`(PG16+后端自动迁移种子+前端 :8088)+`scripts/reset_and_replay.sh` 一键重置重放(已真库验证);**踩坑修复**:reset_demo.py 的 drop 列表停在 0001 时代,0002-0004 的表会让 upgrade_head 撞表——补全为全链 drop
+- **前端第 5 页 Bad Case 面板**:统计卡(总数/高危/已隔离)+八类筛选 chips(前端过滤)+坏例卡(severity/status/category 徽标+证据折叠 JSON+detector 中文+点击回溯工作流详情);详情页 `bad_case_scan` 步骤特殊渲染(红色警示节点+origin 徽标+patterns/phrases 标签化);**踩坑**:证据折叠按钮嵌在可点击卡内,点击会冒泡触发卡片跳转——CollapsibleJson 的 toggle 加 stopPropagation 修复(浏览器实测验证)
+- **验收**:pytest 77 绿(+13 缓存单测 +2 主链路 RAG 集成);ruff/tsc 干净;红队门禁 3×PASS;浏览器端到端:面板筛选/跳转/证据展开、详情页扫描块与 knowledge_refs 全部实测通过,截图 4 张入 `docs/screenshots/`
+
 ## 后续里程碑速查
 
-M6 客服 RAG ✅ · M7 BadCase 红队 ✅(均见上) · M8 Demo 兜底缓存 + 前端五页打磨(Bad Case 面板 / 可观测完善)。
+v1.4 全里程碑 M0-M8 ✅ 收官。可选后续：语义缓存 Phase 2（同 ResultCache 接口换 embedding 相似度 + semantic_cache_entries 迁移）、真实出图接缝、更多红队 seed。
 
 ## 验证命令
 
 ```bash
 bash backend/scripts/dev_postgres.sh          # 起 PG(15433)
 cd backend && .venv/Scripts/python -m ruff check src tests scripts evals
-.venv/Scripts/python -m pytest                # 62 个测试(RUN_LLM_SMOKE=1 追加真网冒烟)
+.venv/Scripts/python -m pytest                # 77 个测试(RUN_LLM_SMOKE=1 追加真网冒烟)
 .venv/Scripts/python evals/run_evals.py       # 红队门禁:3 条 seed 全 PASS 才放行
+.venv/Scripts/python scripts/warm_demo_cache.py   # 预热 Demo 兜底缓存(需真 key,一次性)
+bash scripts/reset_and_replay.sh              # 一键重置+种子+重放全链路(仓库根,cwd 任意)
+docker compose up --build                     # 一键起全栈(前端 :8088)
 .venv/Scripts/python scripts/reset_demo.py && .venv/Scripts/python scripts/seed_mock_data.py
 .venv/Scripts/python -m uvicorn app.api.main:app --port 8000   # cwd=backend
 ```

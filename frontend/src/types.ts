@@ -128,3 +128,51 @@ export interface TraceResponse {
   decisions: DecisionRecord[];
   tool_calls: ToolCall[];
 }
+
+/* ------------------------------------------------------------------ */
+/* Bad Case(M8 防线可观测)                                            */
+/* ------------------------------------------------------------------ */
+
+/** GET /api/v1/badcases 列表项 */
+export interface BadCase {
+  id: string;
+  tenant_id: string;
+  /** 关联的工作流,面板卡片点击后跳转到该工作流详情页 */
+  workflow_id: string;
+  /** PRD 八类之一:input_anomaly / output_runaway / calc_anomaly / tool_failure /
+   *  flow_anomaly / memory_anomaly / context_anomaly / biz_violation */
+  category: string;
+  /** high / medium / low */
+  severity: string;
+  /** 检测器标识,如 input_injection / output_absolute_claims / memory_poisoning */
+  detector: string;
+  summary: string;
+  /** 结构化证据(如 { patterns: [...] } / { phrases: [...] }),渲染时兜底为 JSON 展示 */
+  evidence: unknown;
+  /** detected / quarantined / resolved / escalated / aborted */
+  status: string;
+  created_at: string;
+}
+
+/**
+ * trace 中 node="bad_case_scan" 步骤的 detail 形状。
+ * 后端字段可能略有出入,所有属性均按可选处理,渲染层做好空值兜底;
+ * 未识别的字段仍可通过 CollapsibleJson 以原始 JSON 查看。
+ */
+export interface BadCaseScanDetail {
+  /** 扫描发生的链路:planner / listing / retrospective */
+  origin?: string;
+  /** 扫描命中列表 */
+  hits?: Array<{
+    source?: unknown;
+    category?: string;
+    detector?: string;
+    severity?: string;
+    summary?: string;
+    /** 典型形状:{ patterns?: string[] } 或 { phrases?: string[] } */
+    evidence?: unknown;
+  }>;
+  /** 汇总结论:可能是数组、对象或字符串,渲染层容错解析 */
+  findings?: unknown;
+  [key: string]: unknown;
+}
