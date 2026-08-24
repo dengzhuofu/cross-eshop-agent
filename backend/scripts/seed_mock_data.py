@@ -5,7 +5,8 @@
 
 import asyncio
 
-from app.persistence.db import init_db
+from app.persistence.db import adispose_database
+from app.persistence.migrations import upgrade_head
 from app.persistence.repositories.workflow_repo import WorkflowRepository
 
 TENANTS = [
@@ -15,11 +16,12 @@ TENANTS = [
 
 
 async def main() -> None:
-    await init_db()
+    await upgrade_head()  # M1 起 schema 由 alembic 保证
     repo = WorkflowRepository()
     for tenant_id, name in TENANTS:
         await repo.ensure_tenant(tenant_id, name)
         print(f"tenant ready: {tenant_id} ({name})")
+    await adispose_database()
 
     print()
     print("创建工作流示例：")

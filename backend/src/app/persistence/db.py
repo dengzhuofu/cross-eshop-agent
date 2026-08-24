@@ -32,6 +32,16 @@ def reset_database() -> None:
     _factory = None
 
 
+async def adispose_database() -> None:
+    """有事件循环时的正确释放方式：asyncpg 连接必须经 await 关闭，
+    否则进程退出时会出现 MissingGreenlet 噪音。"""
+    global _engine, _factory
+    if _engine is not None:
+        await _engine.dispose()
+    _engine = None
+    _factory = None
+
+
 def session_factory() -> async_sessionmaker[AsyncSession]:
     if _factory is None:
         from app.config import get_settings

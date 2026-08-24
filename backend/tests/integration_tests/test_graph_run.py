@@ -68,9 +68,18 @@ async def test_full_run_completes_with_expected_loops():
     verdicts = [(s.detail or {}).get("verdict") for s in critic_steps]
     assert "rewrite" in verdicts and "pass" in verdicts
 
-    # 发布产物带幂等键（PRD §18.7）
+    # 发布产物带幂等键（PRD §18.7），且 listing_id 由真实 adapter 生成（平台前缀）
     assert final_state["published"]
     assert all(p["idempotency_key"] for p in final_state["published"])
+    prefixes = {p["listing_id"][:3] for p in final_state["published"]}
+    assert prefixes <= {"ama", "shp", "tts"}
+
+    # M1：发布必须经 ToolExecutor——工具审计表有完整调用记录
+    calls = await repo.tool_calls("t_test", wf.id)
+    tools_used = {c.tool for c in calls}
+    assert {"get_marketplace_rules", "publish_listing"} <= tools_used
+    pub = [c for c in calls if c.tool == "publish_listing"]
+    assert all(c.status == "ok" and c.risk_level == "high" for c in pub)
 
     # 复盘存在且声明记忆回写接缝
     assert final_state["retrospective"]["memory_writeback"]

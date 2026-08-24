@@ -10,6 +10,7 @@ dependencies = [
     "sqlalchemy>=2.0.30",
     "aiosqlite>=0.20",
     "asyncpg>=0.29",
+    "alembic>=1.13",
     "pydantic>=2.7",
     "pydantic-settings>=2.2",
     "python-dotenv>=1.0",
@@ -39,6 +40,8 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+# alembic autogenerate 产物不做 lint（与 create_all 的 DDL 必须逐字一致）
+extend-exclude = ["migrations"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]

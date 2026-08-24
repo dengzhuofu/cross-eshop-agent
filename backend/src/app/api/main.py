@@ -16,7 +16,8 @@ from app.graphs.product_launch.agent import graph
 from app.graphs.product_launch.state import initial_state
 from app.multitenancy.context import TenantContext, reset_current_tenant, set_current_tenant
 from app.observability.recorder import RunRecorder
-from app.persistence.db import init_db, reset_database
+from app.persistence.db import adispose_database
+from app.persistence.migrations import upgrade_head
 from app.persistence.repositories.workflow_repo import WorkflowRepository
 
 logger = logging.getLogger("cesa.api")
@@ -24,9 +25,10 @@ logger = logging.getLogger("cesa.api")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    await init_db()
+    # M1 起 schema 由 alembic 管理（create_all 仅用于测试的 hermetic 库）
+    await upgrade_head()
     yield
-    reset_database()
+    await adispose_database()
 
 
 app = FastAPI(title="Cross Eshop Agent", version="0.1.0", lifespan=lifespan)
@@ -156,13 +158,14 @@ async def get_workflow(workflow_id: str, tenant: TenantContext = Depends(tenant_
 
 @app.get("/api/v1/workflows/{workflow_id}/trace")
 async def get_trace(workflow_id: str, tenant: TenantContext = Depends(tenant_dep)) -> dict:
-    """决策时间线 + 步骤 trace（PRD §16.2 的 M0 版本）。"""
+    """决策时间线 + 步骤 trace + 工具调用审计（PRD §16.2 / §7.2）。"""
     repo = WorkflowRepository()
     wf = await repo.get(tenant.tenant_id, workflow_id)
     if wf is None:
         raise HTTPException(status_code=404, detail="not found")
     steps = await repo.steps(tenant.tenant_id, workflow_id)
     decisions = await repo.decisions(tenant.tenant_id, workflow_id)
+    calls = await repo.tool_calls(tenant.tenant_id, workflow_id)
     return {
         "workflow": {"id": wf.id, "status": wf.status, "error": wf.error},
         "steps": [
@@ -185,5 +188,17 @@ async def get_trace(workflow_id: str, tenant: TenantContext = Depends(tenant_dep
                 "created_at": str(d.created_at),
             }
             for d in decisions
+        ],
+        "tool_calls": [
+            {
+                "id": c.id,
+                "tool": c.tool,
+                "risk_level": c.risk_level,
+                "status": c.status,
+                "idempotency_key": c.idempotency_key,
+                "error": c.error,
+                "latency_ms": c.latency_ms,
+            }
+            for c in calls
         ],
     }

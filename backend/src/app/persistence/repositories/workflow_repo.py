@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy import select
 
 from app.persistence.db import session_factory
-from app.persistence.models import AgentDecision, Tenant, Workflow, WorkflowStep
+from app.persistence.models import AgentDecision, Tenant, ToolCall, Workflow, WorkflowStep
 
 
 class WorkflowRepository:
@@ -173,6 +173,77 @@ class WorkflowRepository:
                             AgentDecision.tenant_id == tenant_id,
                         )
                         .order_by(AgentDecision.created_at)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            return list(rows)
+
+    # ---- tool calls（审计 + 幂等回放）----
+
+    async def record_tool_call(
+        self,
+        tenant_id: str,
+        tool: str,
+        status: str,
+        call_id: str,
+        workflow_id: str | None = None,
+        risk_level: str = "low",
+        idempotency_key: str | None = None,
+        input_summary: dict | None = None,
+        output_summary: dict | None = None,
+        error: str | None = None,
+        latency_ms: int | None = None,
+    ) -> None:
+        async with self._factory() as s:
+            s.add(
+                ToolCall(
+                    id=call_id,
+                    tenant_id=tenant_id,
+                    workflow_id=workflow_id,
+                    tool=tool,
+                    risk_level=risk_level,
+                    idempotency_key=idempotency_key,
+                    input_summary=input_summary,
+                    output_summary=output_summary,
+                    status=status,
+                    error=error,
+                    latency_ms=latency_ms,
+                )
+            )
+            await s.commit()
+
+    async def find_tool_output_by_idempotency(
+        self, tenant_id: str, idempotency_key: str
+    ) -> dict | None:
+        """幂等回放：返回同租户下该键最近一次成功调用的输出。"""
+        async with self._factory() as s:
+            row = (
+                await s.execute(
+                    select(ToolCall)
+                    .where(
+                        ToolCall.tenant_id == tenant_id,
+                        ToolCall.idempotency_key == idempotency_key,
+                        ToolCall.status == "ok",
+                    )
+                    .order_by(ToolCall.created_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            return row.output_summary if row else None
+
+    async def tool_calls(self, tenant_id: str, workflow_id: str) -> list[ToolCall]:
+        async with self._factory() as s:
+            rows = (
+                (
+                    await s.execute(
+                        select(ToolCall)
+                        .where(
+                            ToolCall.tenant_id == tenant_id,
+                            ToolCall.workflow_id == workflow_id,
+                        )
+                        .order_by(ToolCall.created_at)
                     )
                 )
                 .scalars()

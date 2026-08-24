@@ -15,9 +15,35 @@ from langchain_core.runnables import RunnableConfig
 from app.config import get_settings
 from app.domain.enums import AgentDecisionType, WorkflowStatus
 from app.observability.recorder import recorder_from_config
+from app.persistence.memory import MemoryWorkflowRepository
+from app.tools import ToolContext, ToolError, execute_tool
 
 # Critic 声明黑名单（MVP 规则校验器雏形；M7 移入 guardrails.detectors）
 BANNED_CLAIM_PHRASES = ("保证", "100%", "治愈", "根治")
+
+# 卖点数量不满足平台下限时的通用补位文案（按规则动态取用）
+GENERIC_BULLET_FILLERS = (
+    "Sturdy handle for easy pull",
+    "Wipes clean in seconds",
+    "Stackable modular design",
+    "Reinforced base panel",
+)
+
+
+def _tool_repo(config: RunnableConfig):
+    """工具审计与状态同库；无 DB 的 langgraph dev 模式退化为内存仓储。"""
+    rec = recorder_from_config(config)
+    return getattr(rec, "repo", None) or MemoryWorkflowRepository()
+
+
+def _tool_ctx(state: Dict[str, Any]) -> ToolContext:
+    # 铁律：tenant_id 只由系统注入 ctx，绝不进入工具参数（PRD §13.2）
+    return ToolContext(
+        tenant_id=state["tenant_id"],
+        workflow_id=state["workflow_id"],
+        actor_id="graph",
+        approved=bool(state.get("approved")),
+    )
 
 
 def _sp(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -224,8 +250,11 @@ async def node_listing(state: Dict[str, Any], config: RunnableConfig) -> Dict[st
     marketplaces = task_input.get("marketplaces") or ["amazon", "shopify", "tiktok_shop"]
     rounds = state.get("critique_rounds", 0)
     constraints = (_sp(state).get("constraints")) or []
+    repo = _tool_repo(config)
+    ctx = _tool_ctx(state)
 
     drafts: List[Dict[str, Any]] = []
+    rules_fetched: Dict[str, Any] = {}
     for mp in marketplaces:
         if rounds == 0:
             # 故意埋雷：首轮包含无证据绝对化声明，确保 Critic 打回（demo §24 步骤 8）
@@ -233,16 +262,43 @@ async def node_listing(state: Dict[str, Any], config: RunnableConfig) -> Dict[st
         else:
             # 应用 Critic 约束后的可证实表述（可 diff 证明约束生效）
             claim = "采用加厚 PP 材质，实验室测试承重 40kg"
-        flavor = {
+        bullets = {
             "amazon": ["Fits under most beds", "Foldable flat in 3s", "Reinforced zipper"],
             "shopify": ["SEO: under bed storage", "Story block: 小空间收纳灵感"],
             "tiktok_shop": ["3秒折叠！床底瞬间扩容", "Before/After 对比镜头"],
         }.get(mp, ["Durable foldable storage"])
+        bullets = list(bullets)
+        title = f"{idea} | Foldable Under-Bed Storage Box"
+
+        # M1：经 ToolExecutor 查平台规则，卖点/标题按真实规则整形——
+        # 不再硬编码各平台差异，规则唯一来源是 adapter
+        try:
+            res = await execute_tool(
+                "get_marketplace_rules", {"marketplace": mp}, ctx, repo
+            )
+            rules = res.output["rules"] if res.output else {}
+            rules_fetched[mp] = {
+                "bullets_min": rules.get("bullets_min"),
+                "bullets_max": rules.get("bullets_max"),
+            }
+            i = 0
+            while len(bullets) < int(rules.get("bullets_min") or 0):
+                bullets.append(GENERIC_BULLET_FILLERS[i % len(GENERIC_BULLET_FILLERS)])
+                i += 1
+            bmax = rules.get("bullets_max")
+            if bmax:
+                bullets = bullets[: int(bmax)]
+            tmax = rules.get("title_max_length")
+            if tmax and len(title) > int(tmax):
+                title = title[: int(tmax)]
+        except ToolError as exc:  # 未知平台等：降级为未整形草稿，留给 critic/人工兜底
+            rules_fetched[mp] = {"error": str(exc)}
+
         drafts.append(
             {
                 "marketplace": mp,
-                "title": f"{idea} | Foldable Under-Bed Storage Box",
-                "bullets": flavor,
+                "title": title,
+                "bullets": bullets,
                 "claim": claim,
                 "keywords": ["under bed storage", "foldable box", "bedroom organizer"],
                 "image_brief": {
@@ -256,6 +312,7 @@ async def node_listing(state: Dict[str, Any], config: RunnableConfig) -> Dict[st
     detail: Dict[str, Any] = {"count": len(drafts), "round": rounds + 1}
     if rounds > 0:
         detail["applied_constraints"] = constraints
+    detail["rules_fetched_via_tools"] = rules_fetched
     await rec.step("listing", detail=detail, latency_ms=int((time.perf_counter() - t0) * 1000))
     return {"listings": drafts}
 
@@ -334,26 +391,57 @@ async def node_approval_check(state: Dict[str, Any], config: RunnableConfig) -> 
 
 
 async def node_publish(state: Dict[str, Any], config: RunnableConfig) -> Dict[str, Any]:
+    """发布必须经 ToolExecutor（审批门 + 幂等 + 审计），不允许直连 adapter（PRD §7.2）。"""
     rec = recorder_from_config(config)
     t0 = time.perf_counter()
     wf_id = state["workflow_id"]
+    repo = _tool_repo(config)
+    ctx = _tool_ctx(state)
+
     published = []
+    ok_count = 0
+    replay_count = 0
     for idx, d in enumerate(state.get("listings") or []):
         mp = d.get("marketplace", f"mp_{idx}")
+        idem_key = f"pub_{wf_id}_{mp}"
+        payload = {
+            "marketplace": mp,
+            "workflow_id": wf_id,
+            "listing": d,
+            "idempotency_key": idem_key,
+        }
+        try:
+            res = await execute_tool("publish_listing", payload, ctx, repo)
+        except ToolError as exc:
+            published.append(
+                {
+                    "marketplace": mp,
+                    "listing_id": "",
+                    "status": "error",
+                    "error": str(exc),
+                    "idempotency_key": idem_key,
+                }
+            )
+            continue
+        o = res.output or {}
+        if res.replayed:
+            replay_count += 1
+        if o.get("status") == "published":
+            ok_count += 1
         published.append(
             {
                 "marketplace": mp,
-                # M1 接缝：改为 MockAmazonAdapter.publish_listing(payload, idempotency_key)
-                "listing_id": f"{mp[:3].lower()}_{wf_id[:8]}_{idx + 1}",
-                "status": "published",
-                "idempotency_key": f"pub_{wf_id}_{mp}",
+                "listing_id": o.get("listing_id", ""),
+                "status": o.get("status", "error"),
+                "validation_errors": o.get("validation_errors", []),
+                "idempotency_key": idem_key,
+                "replayed": res.replayed,
             }
         )
     await rec.status(WorkflowStatus.executing.value)
+    detail = {"published": ok_count, "replayed": replay_count, "total": len(published)}
     await rec.step(
-        "publish",
-        detail={"published": len(published)},
-        latency_ms=int((time.perf_counter() - t0) * 1000),
+        "publish", detail=detail, latency_ms=int((time.perf_counter() - t0) * 1000)
     )
     return {"published": published}
 

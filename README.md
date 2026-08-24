@@ -2,7 +2,7 @@
 
 面向中小跨境卖家的多租户 Agent 运营平台：选品研究 → 利润测算 → 供应商评估 → go/no-go 决策闸门 → 多平台 Listing 生成（生成-评审-重写闭环）→ 人工审批 → 模拟发布 → 运营监控 → 客服售后 → 复盘回流。
 
-> 当前处于 **M0 walking skeleton**：十三步主链路已端到端跑通，Agent 节点为确定性 stub（零 LLM 调用），但**状态机持久化、决策时间线、trace、租户隔离、循环护栏全部为真实实现**。M2 起逐节点替换为真实 LLM + typed tools。
+> 当前进度：**M1 已完成**。M0 十三步行走骨架 + M1 真实工具层（MarketplaceAdapter ×3、ToolExecutor 治理管线、ToolCall 审计、alembic 迁移）均已在真实 PostgreSQL 上端到端验证。Agent 节点仍为确定性 stub（零 LLM），M2 起逐个替换为真实 LLM。
 
 ## 快速开始
 
@@ -55,7 +55,13 @@ backend/src/app/
 │   ├── nodes.py               #   十三个执行器节点（现为 stub）
 │   └── edges.py               #   纯路由 + 循环硬上限
 ├── api/                       # FastAPI 壳层（workflows CRUD + trace + 租户注入）
+├── adapters/                  # MarketplaceAdapter 协议：同接口不同平台规则（amazon/shopify/tiktok mock）
+├── tools/                     # typed tools：注册中心 + ToolExecutor 唯一调用通道
+│   ├── registry.py            #   ToolDefinition（schema/风险/幂等/审批/超时）
+│   ├── executor.py            #   校验→跨租户检测→审批门→幂等回放→超时→审计
+│   └── catalog/               #   按领域注册（marketplace；后续 profit/supplier…）
 ├── persistence/               # SQLAlchemy 模型与仓储 —— workflow 状态唯一真源
+│   └── migrations/            # alembic（运行时 schema 管理入口 upgrade_head）
 ├── observability/recorder.py  # RunRecorder：节点→WorkflowStep/AgentDecision 的唯一写入口
 ├── multitenancy/              # TenantContext 注入（铁律：tenant_id 永远系统注入）
 ├── domain/                    # 业务枚举（状态机/风险等级/决策类型/BadCase 八类）
@@ -83,7 +89,7 @@ ruff check src tests scripts
 | 里程碑 | 内容 | 状态 |
 | --- | --- | --- |
 | M0 | walking skeleton：十三步 stub 链路 + 状态机持久化 + 决策时间线 + 租户隔离 + 循环护栏 | ✅ |
-| M1 | 工具注册中心/ToolExecutor + 三个 Mock 平台 adapter + alembic 迁移 + 六层隔离补全 | ⬜ |
+| M1 | 工具治理层：MarketplaceAdapter 协议 + 三平台差异化规则 + ToolExecutor（schema 校验/跨租户引用检测/审批门/幂等回放/审计）+ ToolCall 审计表 + alembic 迁移 | ✅ |
 | M2 | 三角真身(上)：SiliconFlow 接入 + research/profit 真实现 + go/no-go LLM 决策 | ⬜ |
 | M3 | 三角真身(下)：listing/critic 真实现 + generate_image_brief | ⬜ |
 | M4 | 记忆双线(pgvector) + 上下文压缩(summarization/tool-output) + token 计量 | ⬜ |

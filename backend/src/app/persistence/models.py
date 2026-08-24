@@ -81,3 +81,25 @@ class AgentDecision(Base):
     chosen_option: Mapped[str] = mapped_column(String(64))
     alternatives: Mapped[list | None] = mapped_column(JSON)
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ToolCall(Base):
+    """工具调用审计（PRD §7.2）。ok/error/replayed 全留痕；幂等键按租户索引。"""
+
+    __tablename__ = "tool_calls"
+    __table_args__ = (Index("ix_tool_calls_tenant_idem", "tenant_id", "idempotency_key"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    workflow_id: Mapped[str | None] = mapped_column(
+        ForeignKey("workflows.id"), index=True
+    )
+    tool: Mapped[str] = mapped_column(String(64))
+    risk_level: Mapped[str] = mapped_column(String(16), default="low")
+    idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    input_summary: Mapped[dict | None] = mapped_column(JSON)
+    output_summary: Mapped[dict | None] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(16))  # ok | error | replayed
+    error: Mapped[str | None] = mapped_column(Text)
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())

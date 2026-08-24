@@ -19,6 +19,11 @@ class RunRecorder:
         self.workflow_id = workflow_id
         self.tenant_id = tenant_id
 
+    @property
+    def repo(self):
+        """供 ToolExecutor 复用同一仓储（审计与状态同库）。"""
+        return self._repo
+
     async def status(
         self,
         status: str,
