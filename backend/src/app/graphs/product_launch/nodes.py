@@ -18,6 +18,7 @@ from langgraph.types import interrupt
 
 from app.config import get_settings
 from app.domain.enums import AgentDecisionType, WorkflowStatus
+from app.guardrails.badcases import run_all_detectors, scrub_untrusted
 from app.llm import LlmError, extract_json, get_llm_client, llm_enabled
 from app.observability.recorder import recorder_from_config
 from app.persistence.memory import MemoryWorkflowRepository
@@ -76,6 +77,55 @@ def _tool_ctx(state: Dict[str, Any]) -> ToolContext:
         actor_id="graph",
         approved=bool(state.get("approved")),
     )
+
+
+async def _record_bad_cases(
+    state: Dict[str, Any], config: RunnableConfig, origin: str, texts: Dict[str, str]
+) -> List[Dict[str, Any]]:
+    """M7 纵深检测：对 {来源: 文本} 跑全部注册 detector（确定性规则，零 LLM）。
+
+    命中一律落 bad_cases 表（status=quarantined）+ bad_case_scan 步骤留痕；
+    记录失败不阻断主流程。返回命中列表供节点做处置（跳过回写/加约束等）。
+    """
+    if not texts:
+        return []
+    hits: List[Dict[str, Any]] = []
+    for source, text in texts.items():
+        for r in run_all_detectors(text or ""):
+            hits.append(
+                {
+                    "source": source,
+                    "category": r.category.value,
+                    "detector": r.detector,
+                    "severity": r.severity,
+                    "summary": r.summary,
+                    "evidence": r.evidence,
+                }
+            )
+    if not hits:
+        return []
+    rec = recorder_from_config(config)
+    repo = _tool_repo(config)
+    try:
+        for h in hits:
+            await repo.insert_bad_case(
+                tenant_id=state["tenant_id"],
+                workflow_id=state.get("workflow_id"),
+                category=h["category"],
+                severity=h["severity"],
+                detector=h["detector"],
+                summary=f"[{origin}/{h['source']}] {h['summary']}",
+                evidence=h["evidence"],
+                status="quarantined",
+            )
+    except Exception:
+        logger.warning("bad_case 落库失败（不阻断主流程）: %s", origin, exc_info=True)
+    await rec.step(
+        "bad_case_scan",
+        detail={"origin": origin, "hits": hits},
+        latency_ms=0,
+    )
+    return hits
 
 
 def _merge_llm_usage(
@@ -167,21 +217,38 @@ async def node_planner(state: Dict[str, Any], config: RunnableConfig) -> Dict[st
     rec = recorder_from_config(config)
     t0 = time.perf_counter()
     task_input = state["task_input"]
+    # M7 红队（PRD §20.3 A 类处置）：选题文本按不可信数据处理——先扫描留痕，
+    # 再脱敏（剥掉注入/投毒模式）后才允许流入后续生成链路
+    raw_idea = str(task_input.get("product_idea") or "")
+    idea_hits = await _record_bad_cases(state, config, "planner", {"product_idea": raw_idea})
+    cleaned_idea, scrubbed = scrub_untrusted(raw_idea)
+    if scrubbed:
+        task_input = {**task_input, "product_idea": cleaned_idea}
     plan = {
-        "goal": f"为「{task_input.get('product_idea')}」完成选品到铺货全链路",
+        "goal": f"为「{cleaned_idea}」完成选品到铺货全链路",
         "marketplaces": task_input.get("marketplaces") or ["amazon", "shopify", "tiktok_shop"],
         "target_market": task_input.get("target_market", "US"),
     }
+    if idea_hits:
+        plan["bad_case_hits"] = len(idea_hits)
+        plan["input_scrubbed"] = scrubbed
     await rec.status(WorkflowStatus.planning.value)
     await rec.step("planner", detail=plan, latency_ms=int((time.perf_counter() - t0) * 1000))
     await rec.decision(
         agent="planner",
         decision_type=AgentDecisionType.plan.value,
-        reasoning="按主链路规划：研究(可深化)→利润→供应商→go/no-go→Listing(可重写)→审批→发布→运营→客服→复盘",
+        reasoning="按主链路规划：研究(可深化)→利润→供应商→go/no-go→Listing(可重写)→审批→发布→运营→客服→复盘"
+        + ("；选题含可疑模式已脱敏后继续（内容仅作数据处理）" if idea_hits else ""),
         chosen_option="proceed_to_research",
         alternatives=["abort"],
     )
-    return {"scratchpad": _artifact(state, "plan", plan)}
+    update: Dict[str, Any] = {"scratchpad": _artifact(state, "plan", plan)}
+    if scrubbed:
+        update["task_input"] = task_input
+        update["scratchpad"] = _constraint(
+            update, f"红队检测：选题文本已脱敏（移除 {len(scrubbed)} 处可疑片段），按不可信数据处理"
+        )
+    return update
 
 
 RESEARCH_SYSTEM_PROMPT = """你是跨境电商选品研究官。
@@ -769,6 +836,21 @@ async def node_listing(state: Dict[str, Any], config: RunnableConfig) -> Dict[st
     detail["titles"] = {d["marketplace"]: d["title"] for d in drafts}
     if sanitized_all:
         detail["llm_copy_sanitized"] = sanitized_all
+    # M7 纵深检测：Listing 产出物扫描夸大/违禁声明（B 输出失控）。
+    # stub 剧情的埋雷文案在此现形并落 bad_cases；LLM 路径经生成端整形后通常 0 命中
+    claim_hits = await _record_bad_cases(
+        state,
+        config,
+        "listing",
+        {
+            f"listing:{d['marketplace']}": " ".join(
+                [d["title"], d["claim"], *d["bullets"]]
+            )
+            for d in drafts
+        },
+    )
+    if claim_hits:
+        detail["bad_case_hits"] = len(claim_hits)
     if usage_acc["prompt"] or usage_acc["completion"]:
         detail["llm_usage"] = usage_acc
     await rec.step("listing", detail=detail, latency_ms=int((time.perf_counter() - t0) * 1000))
@@ -1298,27 +1380,47 @@ async def node_retrospective(state: Dict[str, Any], config: RunnableConfig) -> D
         "运营观测：收纳类目 TikTok 首周转化 1.8% 偏低待验证。"
     )
     memory_writeback: List[Dict[str, Any]] = []
-    try:
-        rres = await execute_tool(
-            "record_memory",
-            {
-                "kind": "launch_lesson",
-                "content": lesson[:2000],
-                "source_workflow_id": state.get("workflow_id"),
-            },
-            ctx,
-            repo,
-        )
-        rout = rres.output or {}
-        memory_writeback.append(
-            {
-                "memory_type": "launch_lesson",
-                "memory_id": rout.get("memory_id"),
-                "engine": rout.get("engine"),
-            }
-        )
-    except ToolError:
-        logger.exception("record_memory failed; retrospective continues without writeback")
+    # M7 红队：回写前扫描记忆投毒（F）——选题/供应商话术里的营销夸大会随 lesson
+    # 进入长期记忆污染后续检索，命中即隔离不回写（PRD §20.1 F：隔离不入 semantic）
+    poison_hits = await _record_bad_cases(
+        state, config, "retrospective", {"launch_lesson": lesson}
+    )
+    if poison_hits:
+        try:
+            await repo.insert_bad_case(
+                tenant_id=state["tenant_id"],
+                workflow_id=state.get("workflow_id"),
+                category="memory_anomaly",
+                severity="high",
+                detector="memory_writeback_block",
+                summary="复盘经验含投毒模式，本次记忆回写已隔离跳过",
+                evidence={"hits": len(poison_hits)},
+                status="quarantined",
+            )
+        except Exception:
+            logger.warning("bad_case 落库失败（不阻断主流程）", exc_info=True)
+    else:
+        try:
+            rres = await execute_tool(
+                "record_memory",
+                {
+                    "kind": "launch_lesson",
+                    "content": lesson[:2000],
+                    "source_workflow_id": state.get("workflow_id"),
+                },
+                ctx,
+                repo,
+            )
+            rout = rres.output or {}
+            memory_writeback.append(
+                {
+                    "memory_type": "launch_lesson",
+                    "memory_id": rout.get("memory_id"),
+                    "engine": rout.get("engine"),
+                }
+            )
+        except ToolError:
+            logger.exception("record_memory failed; retrospective continues without writeback")
 
     retrospective = {
         "summary": (
@@ -1333,6 +1435,7 @@ async def node_retrospective(state: Dict[str, Any], config: RunnableConfig) -> D
             f"Critic 重写 x{state.get('critique_rounds', 0)}",
         ],
         "memory_writeback": memory_writeback,
+        "memory_writeback_blocked": bool(poison_hits),
         "next_experiments": ["售价上探至 34.99 测试需求弹性", "补充 sup_003 备选供应商询价"],
     }
     await rec.status(WorkflowStatus.retrospective.value)

@@ -14,6 +14,7 @@ from sqlalchemy import select
 from app.persistence.db import session_factory
 from app.persistence.models import (
     AgentDecision,
+    BadCaseRecord,
     KnowledgeRecord,
     MemoryRecord,
     Tenant,
@@ -381,3 +382,66 @@ class WorkflowRepository:
         ]
         scored.sort(key=lambda item: item["similarity"], reverse=True)
         return scored[:top_k]
+
+    # ---- bad_cases（红队/Bad Case 闭环，M7）----
+
+    async def insert_bad_case(self, *, tenant_id: str, category: str, severity: str,
+                              detector: str, summary: str, workflow_id: str | None = None,
+                              evidence: dict | None = None,
+                              status: str = "detected") -> str:
+        """记录一次 bad case 检测命中，返回 bad_case_id（uuid4().hex）。"""
+        bad_case_id = uuid.uuid4().hex
+        async with self._factory() as s:
+            s.add(
+                BadCaseRecord(
+                    id=bad_case_id,
+                    tenant_id=tenant_id,
+                    workflow_id=workflow_id,
+                    category=category,
+                    severity=severity,
+                    detector=detector,
+                    summary=summary,
+                    evidence=evidence,
+                    status=status,
+                )
+            )
+            await s.commit()
+        return bad_case_id
+
+    async def list_bad_cases(self, *, tenant_id: str, workflow_id: str | None = None,
+                             category: str | None = None,
+                             limit: int = 50) -> list[dict]:
+        """按租户过滤列出 bad case（可再按 workflow/category），created_at 倒序。"""
+        filters = [BadCaseRecord.tenant_id == tenant_id]
+        if workflow_id:
+            filters.append(BadCaseRecord.workflow_id == workflow_id)
+        if category:
+            filters.append(BadCaseRecord.category == category)
+        async with self._factory() as s:
+            rows = (
+                (
+                    await s.execute(
+                        select(BadCaseRecord)
+                        .where(*filters)
+                        .order_by(BadCaseRecord.created_at.desc())
+                        .limit(limit)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return [
+            {
+                "id": r.id,
+                "workflow_id": r.workflow_id,
+                "category": r.category,
+                "severity": r.severity,
+                "detector": r.detector,
+                "summary": r.summary,
+                "evidence": r.evidence,
+                "status": r.status,
+                "outcome": r.outcome,
+                "created_at": r.created_at.isoformat() if r.created_at else "",
+            }
+            for r in rows
+        ]

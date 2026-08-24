@@ -107,16 +107,27 @@
 - **验收**:pytest 58 绿(+6 RAG/订单工具/冲突回退单测,+2 集成:全链路 support 融合 + globex 跨租户不可见);ruff/tsc 干净;真实冒烟 run `09842a44`:support 步骤 engine=llm、rag_hits=3、refs=[POL-RFD-02, POL-EXC-05, FAQ-02] 全部命中白名单、conflict_check 无冲突,决策与双工具审计落 PG
 - **演示冲突路径**:FAQ-01 写通用时效 7-10 个工作日而 ord_88123 实时 3-5——LLM 若抄了通用值,`_etas_in` 判冲突弃稿回退模板,单测 `test_support_conflict_falls_back_to_template` 固化该行为
 
+## ✅ M7 BadCase 红队:detector 注册表 + 三道防线 + eval 门禁(已完成,62 测试绿)
+
+- **detector 注册表(`guardrails/badcases.py`)**:`register_detector`/`run_all_detectors`,每类 detector 独立实现、独立注册,新类别=新注册不动主干(v1.4 §1.5);全部纯确定性正则零 LLM。已注册 3 个:input_injection(A,提示注入/越狱指令)、output_absolute_claims(B,绝对化违禁声明)、memory_poisoning(F,夸大话术污染记忆)。枚举 `BadCaseCategory` 八类全集保留(A-H),MVP 只实现三条 seed 对应 detector
+- **三道防线接线(纵深防御)**:(1)planner——选题先扫描再 `scrub_untrusted` 脱敏,**脱敏版直接替换 task_input.product_idea** 再喂生成(输入侧);(2)listing——每个平台草稿 title+claim+bullets 全文扫描(输出侧);(3)retrospective——复盘 lesson 回写前扫描,命中投毒即跳过 record_memory 并落 memory_writeback_block 坏例(记忆投毒兜底)。所有命中写 `bad_cases` 表(status=quarantined),step detail 带 bad_case_hits,主流程永不阻断
+- **红队真实战果**:首版 seed 注入文案("ignore all previous instructions"/"跳过所有审查")经 planner→listing 泄漏进最终 Listing——由此催生 scrub_untrusted:**与 detector 共享同一组正则**(检出什么就剥什么,规则永不漂移);"跳过所有审查"最初用裸 `skip` 匹配太宽误伤正常文案,收窄为 `skip\s+(?:the\s+)?(?:all\s+)?(?:reviews?|checks?|validation|qa)`
+- **eval 门禁双形态**:`app/evals/redteam.py` 定义并执行 3 条 seed(注入 A/违禁声明 B/埋雷 C"保证10年不坏"/记忆投毒 F),断言=期望类别检出 + Listing 无违禁词 + 复盘 JSON 无投毒;pytest 参数化集成测试跑同一份 seed;standalone `backend/evals/run_evals.py`(自建封闭环境,临时 SQLite+空 key 零出网)供 CI 单命令门禁,任一 seed 违规 exit 1
+- **配套**:`bad_cases` 表(迁移 0004,tenant/workflow/category/severity/detector/evidence JSON/status)+ `GET /api/v1/badcases`(租户隔离,limit/workflow_id/category 过滤)+ `scripts/export_badcases.py`(JSONL 导出数据集)
+- **踩坑:重复枚举定义**——enums.py 里残留一版旧 BadCaseCategory stub(a_input/b_output 值)排在新版之后把新枚举整个遮蔽,运行时 AttributeError: output_runaway;grep 双定义删旧即愈。测试库泄漏与 tenants.name UNIQUE 两坑同 M6(见上),红队租户同样带 seq 序号
+- **验收**:pytest 62 绿(+3 红队参数化 +1 坏例租户隔离);ruff 干净(含 evals 目录);门禁脚本 3×PASS(注入 seed 检出 A+B 两类、违禁声明 seed 检出 B、投毒 seed 检出 F+B 且复盘无污染)
+
 ## 后续里程碑速查
 
-M6 客服 RAG ✅(见上) · M7 BadCase 红队 · M8 前端五页打磨(可观测面板三视图 + 审批中心已完成)。
+M6 客服 RAG ✅ · M7 BadCase 红队 ✅(均见上) · M8 Demo 兜底缓存 + 前端五页打磨(Bad Case 面板 / 可观测完善)。
 
 ## 验证命令
 
 ```bash
 bash backend/scripts/dev_postgres.sh          # 起 PG(15433)
-cd backend && .venv/Scripts/python -m ruff check src tests scripts
-.venv/Scripts/python -m pytest                # 46 个测试(RUN_LLM_SMOKE=1 追加 2 个真网冒烟)
+cd backend && .venv/Scripts/python -m ruff check src tests scripts evals
+.venv/Scripts/python -m pytest                # 62 个测试(RUN_LLM_SMOKE=1 追加真网冒烟)
+.venv/Scripts/python evals/run_evals.py       # 红队门禁:3 条 seed 全 PASS 才放行
 .venv/Scripts/python scripts/reset_demo.py && .venv/Scripts/python scripts/seed_mock_data.py
 .venv/Scripts/python -m uvicorn app.api.main:app --port 8000   # cwd=backend
 ```

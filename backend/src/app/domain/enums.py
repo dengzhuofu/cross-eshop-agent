@@ -56,13 +56,23 @@ class MemoryType(str, Enum):
 
 
 class BadCaseCategory(str, Enum):
-    """PRD §20.1 八类；MVP 只实现 A/B/H 三条 seed 的 detector（v1.4 §1.5），枚举保留全集。"""
+    """八类分类法（PRD §20.1）。detector 注册表按类独立实现、独立注册（v1.4 §1.5）。"""
 
-    a_input = "A_input"
-    b_output = "B_output"
-    c_computation = "C_computation"
-    d_tool = "D_tool"
-    e_process = "E_process"
-    f_memory = "F_memory"
-    g_context = "G_context"
-    h_business = "H_business"
+    input_anomaly = "input_anomaly"        # A：注入/超长/非法 schema/PII
+    output_runaway = "output_runaway"      # B：幻觉/schema 不符/夸大声明
+    calc_anomaly = "calc_anomaly"          # C：除零/缺输入/负利润
+    tool_failure = "tool_failure"          # D：adapter 错误/限流/超时
+    flow_anomaly = "flow_anomaly"          # E：死循环/审批拒绝/状态机卡死
+    memory_anomaly = "memory_anomaly"      # F：记忆投毒/膨胀/不相关
+    context_anomaly = "context_anomaly"    # G：token 超预算/压缩丢信息
+    biz_violation = "biz_violation"        # H：违规 Listing/过度承诺/退款异常
+
+
+class BadCaseStatus(str, Enum):
+    """状态机（PRD §20.4）：detected → quarantined → retry/reroute/escalate/abort → resolved。"""
+
+    detected = "detected"
+    quarantined = "quarantined"
+    resolved = "resolved"
+    escalated = "escalated"
+    aborted = "aborted"

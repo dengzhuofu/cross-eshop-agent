@@ -330,3 +330,18 @@ async def submit_approval(
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
     return {"id": workflow_id, "status": "running"}
+
+
+@app.get("/api/v1/badcases")
+async def list_badcases(
+    limit: int = 50,
+    workflow_id: Optional[str] = None,
+    category: Optional[str] = None,
+    tenant: TenantContext = Depends(tenant_dep),
+) -> dict:
+    """本租户 Bad Case 列表（M7 红队沉淀；跨工作流可按 workflow_id/category 过滤）。"""
+    repo = WorkflowRepository()
+    items = await repo.list_bad_cases(
+        tenant_id=tenant.tenant_id, workflow_id=workflow_id, category=category, limit=limit
+    )
+    return {"items": items}

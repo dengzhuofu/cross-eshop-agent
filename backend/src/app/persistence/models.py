@@ -145,3 +145,24 @@ class KnowledgeRecord(Base):
     ref: Mapped[str | None] = mapped_column(String(64))
     meta: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class BadCaseRecord(Base):
+    """Bad Case 记录（M7，PRD §20）。八类分类 + 状态机；进 dataset 的用例在 eval
+    CI 门禁里作黄金回归——新代码导致旧 bad case 复现即阻断。
+    """
+
+    __tablename__ = "bad_cases"
+    __table_args__ = (Index("ix_bad_cases_tenant_category", "tenant_id", "category"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    workflow_id: Mapped[str | None] = mapped_column(ForeignKey("workflows.id"), index=True)
+    category: Mapped[str] = mapped_column(String(32))  # BadCaseCategory
+    severity: Mapped[str] = mapped_column(String(16))  # high | medium | low
+    detector: Mapped[str] = mapped_column(String(64))  # 注册的 detector 名
+    summary: Mapped[str] = mapped_column(Text)
+    evidence: Mapped[dict | None] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(16), default="detected")
+    outcome: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
