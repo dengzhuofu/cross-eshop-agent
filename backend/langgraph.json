@@ -1,0 +1,8 @@
+{
+  "$schema": "https://langgra.ph/schema.json",
+  "dependencies": ["."],
+  "graphs": {
+    "product_launch": "./src/app/graphs/product_launch/agent.py:graph"
+  },
+  "env": ".env"
+}
