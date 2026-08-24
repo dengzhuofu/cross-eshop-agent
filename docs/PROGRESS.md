@@ -71,16 +71,29 @@
 - **测试 38 个全绿**(+7 工具单测:数学/adapter 费率驱动/memory_hit/ImageSpec/executor 通道一致性;+2 critic 分级拦截);ruff 干净
 - **真实 LLM 冒烟**:run `117912aa` 一次通过(critic pass blocking=0,15 治理工具调用,publish×3 幂等键);此前 run `9144c2c8` 验证了重写闭环全形态(27 条审计含 image_brief×8)
 
+## ✅ M4 长期记忆双线 + 上下文压缩 + token 硬熔断(已完成,真实 LLM 全链路冒烟通过)
+
+- **记忆存储**:本机 PG 17.9 **没有 pgvector 扩展** → `memories` 表用 JSON embedding 列 + Python 余弦相似度(迁移 0002);换 pgvector 只需改列类型为 VECTOR(1024) + 把排序挪进 SQL,检索契约不变
+- **嵌入客户端** `llm/embeddings.py`:BAAI/bge-m3(1024 维,SiliconFlow /embeddings 已真网验证);无 key/网络失败自动降级 `_hash_embedding`(md5 分桶 + L2 归一化,确定性,测试零出网)。**写入与查询必须同引擎**(seed 脚本经 embed_texts 生成,engine 跟随 .env)
+- **两个治理工具**:retrieve_memory / record_memory 经 ToolExecutor 全管线;tenant_id 由 ToolContext 注入不可伪造,跨租户检索为空已有单测。工具数 9→11
+- **节点接线**:node_supplier 检索 supplier_risk 记忆、按内容命中候选 id/name 附加 memory_hit(选择逻辑仍全确定性);node_retrospective 用 record_memory 真实回写 launch_lesson(source_workflow_id 关联本工作流),失败不阻断收尾。目录里的静态 memory_hit seed 已删除(M3 的演示形态由真实检索替代)
+- **token 硬熔断(PRD §17)**:所有 4 处 LLM 调用点统一走 `_llm_available(state)`(key 可用 且 llm_usage.total < llm_hard_budget=80000,alert 50k 先告警);research 步骤 detail 带 llm_budget_cut 标记供 UI 展示
+- **上下文压缩接缝(PRD §9)**:`_compress_tool_outputs`(单工具 700 字符/总量 2400)已接 research prompt;后续节点按需复用
+- **踩坑①:critic 三轮不收敛复发**——研究痛点"新箱异味"持续诱导生成端换皮输出 odor-free(Odor-Free Fabric/Odorless/minimize odor),prompt 约束压不住,"minimize new-box odor"还被过度追打。修复双管齐下:(a)`CLAIM_HEDGE_MAP` + `_sanitize_llm_copy` 在**生成端**确定性改写(odor-free→low-odor 等,只动 LLM 产物、stub 埋雷不动),改动留痕进 step detail;(b)rubric 补"low-odor/minimize/reduce 等已留余量表述不要报"。修复后 run `e3d237cc` 一轮收敛(critic blocking=0),supplier 记忆降权与复盘回写全部在 trace 可见
+- **踩坑②:风险记忆 seed 文案连带误伤**——一条记忆里同时点名 sup_002(违规方)和 sup_001(推荐替代品),节点按 id/name 匹配会把 sup_001 也打标 → 风险记忆只写被标记的供应商
+- **可观测性**:critic step detail 现带 blocking_issues 原文(LLM issue 键是 "issue" 不是 "phrase",取值要兜底)
+- **测试 46 个全绿**(+6 M4 工具/嵌入单测,+2 sanitizer);ruff 干净
+
 ## 后续里程碑速查
 
-M4 记忆双线(pgvector)+上下文压缩+token硬熔断 · M5 HITL interrupt · M6 Support RAG · M7 BadCase 红队 · M8 前端五页打磨(可观测面板三视图已完成)。
+M4 记忆双线(pgvector)+上下文压缩+token硬熔断 ✅(见上,pgvector 换成 JSONB+Python 余弦等价实现) · M5 HITL interrupt · M6 Support RAG · M7 BadCase 红队 · M8 前端五页打磨(可观测面板三视图已完成)。
 
 ## 验证命令
 
 ```bash
 bash backend/scripts/dev_postgres.sh          # 起 PG(15433)
 cd backend && .venv/Scripts/python -m ruff check src tests scripts
-.venv/Scripts/python -m pytest                # 38 个测试(RUN_LLM_SMOKE=1 追加 2 个真网冒烟)
+.venv/Scripts/python -m pytest                # 46 个测试(RUN_LLM_SMOKE=1 追加 2 个真网冒烟)
 .venv/Scripts/python scripts/reset_demo.py && .venv/Scripts/python scripts/seed_mock_data.py
 .venv/Scripts/python -m uvicorn app.api.main:app --port 8000   # cwd=backend
 ```

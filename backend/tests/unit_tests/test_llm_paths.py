@@ -141,3 +141,39 @@ async def test_critic_high_issue_triggers_rewrite(monkeypatch):
     assert len(update["critique_issues"]) == 1
     assert update["critique_rounds"] == 1
     assert update["scratchpad"]["critique"]["constraints"]
+
+
+def test_sanitize_llm_copy_hedges_absolute_claims():
+    """绝对化措辞必须被确定性改写为留余量表述（LLM 自审不可靠的硬保证）。"""
+    from app.graphs.product_launch.nodes import _sanitize_llm_copy
+
+    text, changes = _sanitize_llm_copy("Odor-Free Fabric, 100% waterproof, 保证10年不坏")
+    low = text.lower()
+    assert "odor-free" not in low and "low-odor" in low
+    assert "100%" not in text and "保证10年不坏" not in text
+    assert "加厚 PP 材质" in text
+    assert len(changes) == 3
+
+
+async def test_listing_generation_scrubs_banned_phrases(monkeypatch):
+    """_listing_via_llm 返回前必须过 sanitize；改动记录随产物返回供 trace 展示。"""
+    from app.graphs.product_launch import nodes as N
+
+    async def _fake_call(system, user, **kw):
+        return (
+            {
+                "title": "Odor-Free Under Bed Storage",
+                "bullets": ["Odorless fabric", "Folds flat in 3s"],
+                "claim": "保证10年不坏，承重强",
+                "keywords": ["storage"],
+            },
+            {"prompt": 10, "completion": 5},
+        )
+
+    monkeypatch.setattr(N, "_call_llm_json", _fake_call)
+    gen = await N._listing_via_llm("床底收纳箱", "US", {}, {}, [], {"prompt": 0, "completion": 0})
+    assert gen is not None
+    assert "odor-free" not in gen["title"].lower()
+    assert all("odorless" not in b.lower() for b in gen["bullets"])
+    assert gen["claim"].startswith("加厚 PP 材质")
+    assert gen["sanitized"]  # 改动留痕进 step detail

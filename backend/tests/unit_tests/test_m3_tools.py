@@ -60,14 +60,15 @@ async def test_estimate_profit_return_rate_sensitivity():
     assert doubled["margin_pct"] < base["margin_pct"]
 
 
-async def test_search_suppliers_shape_and_memory_hit():
+async def test_search_suppliers_shape():
     out = await _search_suppliers(SearchSuppliersInput(keyword="床底收纳箱"), _CTX)
     assert len(out["candidates"]) == 2
     by_id = {c["id"]: c for c in out["candidates"]}
     assert by_id["sup_001"]["risk"] == "low"
     sup2 = by_id["sup_002"]
     assert sup2["risk"] == "high"
-    assert "reason" in (sup2.get("memory_hit") or {})
+    # M4 起 memory_hit 不在目录里——由节点检索 supplier_risk 记忆后动态附加
+    assert sup2.get("memory_hit") is None
     truncated = await _search_suppliers(SearchSuppliersInput(keyword="x", max_results=1), _CTX)
     assert len(truncated["candidates"]) == 1
 

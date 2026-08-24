@@ -1,4 +1,4 @@
-"""ORM 模型（M0 子集）。
+"""ORM 模型（M0 子集 + M4 长期记忆）。
 
 规则（v1.4 §2.3）：workflow 状态唯一真源在这里（Postgres）；LangGraph checkpoint 只负责断点恢复。
 所有业务表含 tenant_id；按 id 查询必须同时校验 tenant_id（IDOR 返 404，见 repository 层）。
@@ -102,4 +102,26 @@ class ToolCall(Base):
     status: Mapped[str] = mapped_column(String(16))  # ok | error | replayed
     error: Mapped[str | None] = mapped_column(Text)
     latency_ms: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class MemoryRecord(Base):
+    """长期记忆（M4）。kind 为业务分类（supplier_risk / launch_lesson 等），按租户隔离。
+
+    embedding 存 JSON float 数组：本机 PG 无 pgvector 扩展，JSONB + Python 余弦是等价实现；
+    换 pgvector 时此列改 VECTOR(1024)，search_memories 改 SQL 内积查询即可。
+    """
+
+    __tablename__ = "memories"
+    __table_args__ = (Index("ix_memories_tenant_kind", "tenant_id", "kind"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    content: Mapped[str] = mapped_column(Text)
+    embedding: Mapped[list] = mapped_column(JSON)
+    meta: Mapped[dict | None] = mapped_column(JSON)
+    source_workflow_id: Mapped[str | None] = mapped_column(
+        ForeignKey("workflows.id"), index=True
+    )
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -2,7 +2,7 @@
 
 面向中小跨境卖家的多租户 Agent 运营平台：选品研究 → 利润测算 → 供应商评估 → go/no-go 决策闸门 → 多平台 Listing 生成（生成-评审-重写闭环）→ 人工审批 → 模拟发布 → 运营监控 → 客服售后 → 复盘回流。
 
-> 当前进度：**M3 已完成**。M0 行走骨架 → M1 工具治理层 → M2 LLM 接入（SiliconFlow/DeepSeek-V3.2）→ M3 三角真身（profit/supplier 数据工具化、critic LLM 审查、image brief 工具化、ToolExecutor handler 异常包装）。核心设计：**LLM 只提议，代码做硬保证**——评分封顶、平台规则整形、critic 分级拦截（high 阻塞重写 / medium 仅记录）、决策 rubric 优先级全由确定性代码兜底；无 key 自动降级 stub，测试 CI 零出网。
+> 当前进度：**M4 已完成**。M0 行走骨架 → M1 工具治理层 → M2 LLM 接入（SiliconFlow/DeepSeek-V3.2）→ M3 三角真身（profit/supplier 数据工具化、critic LLM 审查、image brief 工具化）→ M4 长期记忆双线（供应商风险检索降权 / 复盘经验回写，租户隔离）+ 上下文压缩接缝 + token 硬熔断。核心设计：**LLM 只提议，代码做硬保证**——评分封顶、平台规则整形、绝对化措辞生成端改写（CLAIM_HEDGE_MAP）、critic 分级拦截（high 阻塞重写 / medium 仅记录）、决策 rubric 优先级全由确定性代码兜底；无 key 自动降级 stub/hash 引擎，测试 CI 零出网。
 
 ## 快速开始
 
@@ -72,10 +72,10 @@ backend/src/app/
 ├── tools/                     # typed tools：注册中心 + ToolExecutor 唯一调用通道
 │   ├── registry.py            #   ToolDefinition（schema/风险/幂等/审批/超时）
 │   ├── executor.py            #   校验→跨租户检测→审批门→幂等回放→超时→审计（handler 异常统一包装）
-│   └── catalog/               #   9 个治理工具：marketplace/research/profit/supplier/media
-├── llm/client.py              # SiliconFlow OpenAI 兼容客户端：重试/usage 计量/JSON 提取/llm_enabled 门控
+│   └── catalog/               #   11 个治理工具：marketplace/research/profit/supplier/media/memory
+├── llm/                       # SiliconFlow 客户端（重试/usage/JSON 提取/门控）+ embeddings（bge-m3 1024 维，无 key 降级确定性 hash）
 ├── persistence/               # SQLAlchemy 模型与仓储 —— workflow 状态唯一真源
-│   └── migrations/            # alembic（运行时 schema 管理入口 upgrade_head）
+│   └── migrations/            # alembic（0001 业务表 + 0002 memories 记忆表）
 ├── observability/recorder.py  # RunRecorder：节点→WorkflowStep/AgentDecision 的唯一写入口
 ├── multitenancy/              # TenantContext 注入（铁律：tenant_id 永远系统注入）
 ├── domain/                    # 业务枚举（状态机/风险等级/决策类型/BadCase 八类）
@@ -106,7 +106,7 @@ ruff check src tests scripts
 | M1 | 工具治理层：MarketplaceAdapter 协议 + 三平台差异化规则 + ToolExecutor（schema 校验/跨租户引用检测/审批门/幂等回放/审计）+ ToolCall 审计表 + alembic 迁移 | ✅ |
 | M2 | 三角真身(上)：SiliconFlow 接入 + research 证据评分/深化回路 + go/no-go LLM 决策 + Listing 三平台 LLM 文案（critic 约束回注重写）| ✅ |
 | M3 | 三角真身(下)：profit/supplier 走治理工具（佣金率取自 adapter）+ critic LLM 审查（high 阻塞/medium 记录的分级拦截）+ generate_image_brief 工具化 + ToolHandlerError 包装 | ✅ |
-| M4 | 记忆双线(pgvector) + 上下文压缩(summarization/tool-output) + token 计量 | ⬜ |
+| M4 | 长期记忆双线：retrieve/record_memory 治理工具（bge-m3 嵌入，无 key 降级 hash；租户隔离）+ supplier 风险记忆检索降权 / 复盘经验回写 + 绝对化措辞生成端改写（收敛硬保证）+ 上下文压缩接缝 + token 硬熔断 | ✅ |
 | M5 | 真实人工审批：LangGraph interrupt/resume + Approval Center | ⬜ |
 | M6 | Support Agent + RAG 五类知识集合 | ⬜ |
 | M7 | Bad Case 三条红队 seed + detector 注册表 + eval CI 门禁 | ⬜ |

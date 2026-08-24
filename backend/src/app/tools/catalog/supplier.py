@@ -1,7 +1,7 @@
-"""供应商数据源工具目录（M3）：确定性 mock 目录 + 历史风险记忆 seed。
+"""供应商数据源工具目录（M3）：确定性 mock 目录。
 
-memory_hit 演示"跨工作流风险记忆降权"的展示形态；M4 接 pgvector 后由
-retrieve_memory 实时检索替换 seed（PRD §7.4 / §9）。
+M4 起 memory_hit 不再内嵌于目录——历史风险记忆由节点经 retrieve_memory 实时
+检索后动态附加（PRD §7.4 / §9），本工具保持纯数据源语义。
 """
 
 from pydantic import BaseModel, Field
@@ -24,7 +24,6 @@ class SupplierCandidate(BaseModel):
     lead_time_days: int
     quality_score: int = Field(ge=0, le=100)
     risk: str = "low"
-    memory_hit: dict | None = None
 
 
 class SearchSuppliersOutput(BaseModel):
@@ -51,10 +50,6 @@ _SUPPLIER_CATALOG: list[dict] = [
         "lead_time_days": 35,
         "quality_score": 41,
         "risk": "high",
-        "memory_hit": {
-            "source_workflow_id": "wf_seed_2026_07",
-            "reason": "历史缺陷率 12% 超标被标记",
-        },
     },
 ]
 
@@ -69,7 +64,7 @@ async def _search_suppliers(inp: SearchSuppliersInput, ctx: ToolContext) -> dict
 register(
     ToolDefinition(
         name="search_suppliers",
-        description="搜索供应商目录：报价/起订量/交期/质检分/历史风险记忆命中",
+        description="搜索供应商目录：报价/起订量/交期/质检分/风险等级",
         input_model=SearchSuppliersInput,
         output_model=SearchSuppliersOutput,
         risk_level=RiskLevel.low,

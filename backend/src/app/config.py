@@ -23,8 +23,11 @@ class Settings(BaseSettings):
     embedding_model: str = "BAAI/bge-m3"
     llm_temperature: float = 0.4
     llm_timeout_s: float = 60.0
-    # PRD §17 计量接缝：M2 只做累计 + 告警日志，不做硬熔断
+    # PRD §17 计量接缝：alert 阈值先告警；hard_budget 必须高于 alert（先看见再熔断），
+    # 超限后本工作流后续 LLM 调用一律降级 stub（M4 硬熔断）——预算是租户级保护，
+    # 宁可用确定性兜底也不烧穿成本。正常全链路 LLM run 约耗 2~4 万 token。
     token_alert_threshold: int = 50000
+    llm_hard_budget: int = 80000
 
 
 @lru_cache

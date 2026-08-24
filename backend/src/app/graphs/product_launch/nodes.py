@@ -9,6 +9,7 @@
 
 import json
 import logging
+import re
 import time
 from typing import Any, Dict, List
 
@@ -25,6 +26,31 @@ logger = logging.getLogger(__name__)
 
 # Critic 声明黑名单（MVP 规则校验器雏形；M7 移入 guardrails.detectors）
 BANNED_CLAIM_PHRASES = ("保证", "100%", "治愈", "根治")
+
+# LLM 文案的绝对化措辞"降级替换"表（M4）：真实冒烟中 odor-free 连续三轮换皮重现——
+# 研究痛点里的"新箱异味"持续诱导生成端，prompt 约束压不住。与分数封顶同思路：
+# LLM 只提议、代码做硬保证。只作用于 LLM 产物；stub 剧情的埋雷文案不动
+# （那是 critic 打回演示的种子）。键匹配不区分大小写。
+CLAIM_HEDGE_MAP = {
+    "odor-free": "low-odor",
+    "odor free": "low odor",
+    "odorless": "low-odor",
+    "no odor": "reduced odor",
+    "100%": "",
+    "保证10年不坏": "加厚 PP 材质",
+}
+
+
+def _sanitize_llm_copy(text: str) -> tuple[str, List[str]]:
+    """对单条文案字段做违禁绝对化词的确定性改写，返回（新文本, 改动记录）。"""
+    out = text
+    changes: List[str] = []
+    for phrase, hedge in CLAIM_HEDGE_MAP.items():
+        matches = re.findall(re.escape(phrase), out, flags=re.IGNORECASE)
+        if matches:
+            out = re.sub(re.escape(phrase), hedge, out, flags=re.IGNORECASE)
+            changes.append(f"{phrase}→{hedge or '(删除)'} x{len(matches)}")
+    return re.sub(r"\s{2,}", " ", out).strip(), changes
 
 # 卖点数量不满足平台下限时的通用补位文案（按规则动态取用）
 GENERIC_BULLET_FILLERS = (
@@ -69,6 +95,33 @@ def _merge_llm_usage(
             threshold,
         )
     return u
+
+
+def _llm_available(state: Dict[str, Any]) -> bool:
+    """所有 LLM 调用点的统一闸门（PRD §17 M4 硬熔断）：key 可用 且 预算未烧穿。
+    超出 hard_budget 后本工作流后续 LLM 调用一律降级确定性路径——宁可靠规则兜底，
+    不烧穿租户成本。"""
+    if not llm_enabled():
+        return False
+    used = int((state.get("llm_usage") or {}).get("total_tokens", 0))
+    return used < get_settings().llm_hard_budget
+
+
+def _compress_tool_outputs(
+    tool_outputs: Dict[str, Any], *, per_tool: int = 700, total: int = 2400
+) -> str:
+    """上下文压缩（PRD §9）：工具输出塞 prompt 前的确定性瘦身接缝。
+    按工具分块截断，整体再设总闸；截断处加标记让 LLM 知道数据不完整。"""
+    blocks = []
+    for name, out in tool_outputs.items():
+        block = json.dumps({name: out}, ensure_ascii=False)
+        if len(block) > per_tool:
+            block = block[:per_tool] + "…(truncated)"
+        blocks.append(block)
+    text = "\n".join(blocks)
+    if len(text) > total:
+        text = text[:total] + "…(truncated)"
+    return text
 
 
 async def _call_llm_json(
@@ -172,7 +225,7 @@ async def _research_via_llm(
     parsed, u = await _call_llm_json(
         RESEARCH_SYSTEM_PROMPT,
         "选题：{}（目标市场 {}）\n工具数据：\n{}".format(
-            idea, market, json.dumps(tool_outputs, ensure_ascii=False)
+            idea, market, _compress_tool_outputs(tool_outputs)
         ),
     )
     usage["prompt"] += u["prompt"]
@@ -214,7 +267,9 @@ async def node_research(state: Dict[str, Any], config: RunnableConfig) -> Dict[s
     engine = "stub"
     usage: Dict[str, Any] | None = None
     brief: Dict[str, Any] | None = None
-    if llm_enabled():
+    # M4 硬熔断（PRD §17）：key 可用但 token 预算烧穿时跳过 LLM，只走确定性路径
+    budget_cut = llm_enabled() and not _llm_available(state)
+    if _llm_available(state):
         try:
             brief, usage = await _research_via_llm(state, config, idea, market, rounds)
             engine = "llm"
@@ -240,6 +295,8 @@ async def node_research(state: Dict[str, Any], config: RunnableConfig) -> Dict[s
         "evidence_score": score,
         "engine": engine,
     }
+    if budget_cut:
+        detail["llm_budget_cut"] = True
     if usage is not None:
         detail["llm_usage"] = usage
     await rec.step("research", detail=detail, latency_ms=int((time.perf_counter() - t0) * 1000))
@@ -344,8 +401,6 @@ async def node_supplier(state: Dict[str, Any], config: RunnableConfig) -> Dict[s
             dict(c) for c in ((res.output or {}).get("candidates") or [])
         ]
     except ToolError:
-        # M4 接缝：memory_hit 将由 retrieve_memory 实时检索供应商风险记忆；
-        # 此处为 seed 数据，演示"历史高风险供应商自动降权"的展示形态。
         logger.exception("search_suppliers failed; falling back to seed catalog")
         candidates = [
             {
@@ -365,12 +420,38 @@ async def node_supplier(state: Dict[str, Any], config: RunnableConfig) -> Dict[s
                 "lead_time_days": 35,
                 "quality_score": 41,
                 "risk": "high",
-                "memory_hit": {
-                    "source_workflow_id": "wf_seed_2026_07",
-                    "reason": "历史缺陷率 12% 超标被标记",
-                },
             },
         ]
+
+    # M4 长期记忆（PRD §9）：实时检索本租户的历史供应商风险记忆并命中打标——
+    # 记忆内容须匹配候选 id/name 才附加 memory_hit；检索失败不阻断主链路。
+    # 选择逻辑仍是确定性代码（LLM 只提议、代码做硬保证），记忆只是额外证据源。
+    memory_engine = ""
+    try:
+        mres = await execute_tool(
+            "retrieve_memory",
+            {
+                "kind": "supplier_risk",
+                "query_text": f"{idea} supplier quality defect risk",
+                "top_k": 5,
+            },
+            ctx,
+            repo,
+        )
+        mout = mres.output or {}
+        memory_engine = str(mout.get("engine") or "")
+        for hit in mout.get("results") or []:
+            text = str(hit.get("content") or "")
+            for cand in candidates:
+                if cand.get("id") in text or cand.get("name") in text:
+                    cand["memory_hit"] = {
+                        "source_workflow_id": hit.get("source_workflow_id"),
+                        "reason": text[:120],
+                        "similarity": round(float(hit.get("similarity") or 0.0), 4),
+                    }
+                    break
+    except ToolError:
+        logger.exception("retrieve_memory failed; continuing without risk-memory downweight")
 
     # 选择逻辑留在确定性代码里（PRD §7.3）：低风险优先；同风险按质检分降序、报价升序
     low_risk = sorted(
@@ -393,7 +474,11 @@ async def node_supplier(state: Dict[str, Any], config: RunnableConfig) -> Dict[s
     await rec.status(WorkflowStatus.evaluating_suppliers.value)
     await rec.step(
         "supplier",
-        detail={"primary": suppliers["primary"], "flags": suppliers["risk_flags"]},
+        detail={
+            "primary": suppliers["primary"],
+            "flags": suppliers["risk_flags"],
+            "memory_engine": memory_engine,
+        },
         latency_ms=int((time.perf_counter() - t0) * 1000),
     )
     return {"suppliers": suppliers}
@@ -422,7 +507,7 @@ async def node_decision_gate(state: Dict[str, Any], config: RunnableConfig) -> D
     go: str | None = None
     reasoning = ""
     usage: Dict[str, Any] | None = None
-    if llm_enabled():
+    if _llm_available(state):
         try:
             brief = (state.get("scratchpad", {}).get("artifacts", {}) or {}).get(
                 "research_brief"
@@ -544,7 +629,27 @@ async def _listing_via_llm(
     keywords = [str(k).strip() for k in (parsed.get("keywords") or []) if str(k).strip()]
     if not title or not bullets or not claim:
         return None
-    return {"title": title, "bullets": bullets, "claim": claim, "keywords": keywords}
+
+    # 生成端硬保证：绝对化措辞在代码里直接改写为留余量表述（LLM 自审不可靠）
+    sanitized: List[str] = []
+    title, ch = _sanitize_llm_copy(title)
+    sanitized += [f"title: {c}" for c in ch]
+    claim, ch = _sanitize_llm_copy(claim)
+    sanitized += [f"claim: {c}" for c in ch]
+    hedged_bullets: List[str] = []
+    for b in bullets:
+        b, ch = _sanitize_llm_copy(b)
+        sanitized += [f"bullets: {c}" for c in ch]
+        if b:
+            hedged_bullets.append(b)
+    bullets = hedged_bullets or bullets
+    return {
+        "title": title,
+        "bullets": bullets,
+        "claim": claim,
+        "keywords": keywords,
+        "sanitized": sanitized,
+    }
 
 
 async def node_listing(state: Dict[str, Any], config: RunnableConfig) -> Dict[str, Any]:
@@ -562,12 +667,13 @@ async def node_listing(state: Dict[str, Any], config: RunnableConfig) -> Dict[st
     engine = "stub"
     usage_acc = {"prompt": 0, "completion": 0}
     research_brief = (_sp(state).get("artifacts") or {}).get("research_brief") or {}
-    use_llm = llm_enabled()
+    use_llm = _llm_available(state)
     if use_llm:
         engine = "llm"
 
     drafts: List[Dict[str, Any]] = []
     rules_fetched: Dict[str, Any] = {}
+    sanitized_all: List[str] = []
     for mp in marketplaces:
         bullets = list(STUB_FLAVOR.get(mp, ["Durable foldable storage"]))
         title = f"{idea} | Foldable Under-Bed Storage Box"
@@ -605,6 +711,7 @@ async def node_listing(state: Dict[str, Any], config: RunnableConfig) -> Dict[st
                 claim = gen["claim"]
                 if gen["keywords"]:
                     keywords = gen["keywords"]
+                sanitized_all.extend(f"{mp}: {c}" for c in gen.get("sanitized") or [])
 
         # 规则整形是硬保证：LLM 输出也必须过这一关（不信任生成端遵守了限制）
         i = 0
@@ -659,6 +766,8 @@ async def node_listing(state: Dict[str, Any], config: RunnableConfig) -> Dict[st
     detail["rules_fetched_via_tools"] = rules_fetched
     # 文案是演示的核心产出，把标题放进 step 详情供 UI 直接展示（完整内容在 listings 状态里）
     detail["titles"] = {d["marketplace"]: d["title"] for d in drafts}
+    if sanitized_all:
+        detail["llm_copy_sanitized"] = sanitized_all
     if usage_acc["prompt"] or usage_acc["completion"]:
         detail["llm_usage"] = usage_acc
     await rec.step("listing", detail=detail, latency_ms=int((time.perf_counter() - t0) * 1000))
@@ -684,6 +793,7 @@ CRITIC_SYSTEM_PROMPT = """你是跨境电商 Listing 合规与质量审查官。
   (b) 与本品自身研究事实直接矛盾的宣称（注意：品类差评点≠本品矛盾——
       针对品类痛点给出解决方案型卖点恰是正当营销，不要报）；
 - sturdy/durable/heavy-duty/reinforced 等常规卖点词是可接受的行业修辞，不要报；
+- low-odor/minimize/reduce/help 等已留余量的表述正是合规写法，不要报；
 - 风格润色类建议最多 severity="medium"（medium 只记录、不触发重写）；
 - 不臆造证据里不存在的问题；每条 issue 用 field 精确定位到 title/bullets/claim。"""
 
@@ -754,7 +864,7 @@ async def node_critic(state: Dict[str, Any], config: RunnableConfig) -> Dict[str
     engine = "deterministic"
     usage: Dict[str, Any] | None = None
     llm_issues: List[Dict[str, Any]] = []
-    if llm_enabled():
+    if _llm_available(state):
         try:
             llm_issues, usage = await _critic_via_llm(state, config)
             engine = "llm"
@@ -772,6 +882,16 @@ async def node_critic(state: Dict[str, Any], config: RunnableConfig) -> Dict[str
         "blocking_count": len(blocking),
         "advisory_count": len(advisory),
         "engine": engine,
+        # 问题原文进 trace（短语截断），收敛行为可离线复盘
+        "blocking_issues": [
+            {
+                "marketplace": i.get("marketplace"),
+                "field": i.get("field"),
+                "phrase": str(i.get("phrase") or i.get("issue") or "")[:60],
+                "rule": i.get("rule"),
+            }
+            for i in blocking
+        ],
     }
     if usage is not None:
         detail["llm_usage"] = usage
@@ -955,11 +1075,45 @@ async def node_retrospective(state: Dict[str, Any], config: RunnableConfig) -> D
     rec = recorder_from_config(config)
     t0 = time.perf_counter()
     published = state.get("published") or []
+    repo = _tool_repo(config)
+    ctx = _tool_ctx(state)
+
+    # M4：复盘经验真实回写长期记忆（kind=launch_lesson），供后续工作流
+    # retrieve_memory 召回验证跨工作流学习；回写失败不阻断收尾（记忆是增益不是依赖）。
+    lesson = (
+        f"「{state['task_input'].get('product_idea')}」复盘要点：go/no-go="
+        f"{state.get('go_no_go') or 'n/a'}，研究深化 {state.get('research_rounds', 0)} 轮，"
+        f"Critic 重写 {state.get('critique_rounds', 0)} 轮，{len(published)} 个平台已发布；"
+        "运营观测：收纳类目 TikTok 首周转化 1.8% 偏低待验证。"
+    )
+    memory_writeback: List[Dict[str, Any]] = []
+    try:
+        rres = await execute_tool(
+            "record_memory",
+            {
+                "kind": "launch_lesson",
+                "content": lesson[:2000],
+                "source_workflow_id": state.get("workflow_id"),
+            },
+            ctx,
+            repo,
+        )
+        rout = rres.output or {}
+        memory_writeback.append(
+            {
+                "memory_type": "launch_lesson",
+                "memory_id": rout.get("memory_id"),
+                "engine": rout.get("engine"),
+            }
+        )
+    except ToolError:
+        logger.exception("record_memory failed; retrospective continues without writeback")
+
     retrospective = {
         "summary": (
             f"「{state['task_input'].get('product_idea')}」完成全链路："
             f"研究深化 {state.get('research_rounds', 0)} 轮，"
-            f"Critique 重写 {state.get('critique_rounds', 0)} 轮，"
+            f"Critic 重写 {state.get('critique_rounds', 0)} 轮，"
             f"{len(published)} 个平台已发布"
         ),
         "key_decisions": [
@@ -967,14 +1121,7 @@ async def node_retrospective(state: Dict[str, Any], config: RunnableConfig) -> D
             f"研究深化 x{max(state.get('research_rounds', 0) - 1, 0)}",
             f"Critic 重写 x{state.get('critique_rounds', 0)}",
         ],
-        # M4 接缝：写入 memory_records（episodic），供后续工作流 retrieve_memory 命中验证
-        "memory_writeback": [
-            {
-                "memory_type": "episodic",
-                "entity_type": "category_performance",
-                "content": "收纳类目 TikTok 首周转化 1.8%，偏低待验证",
-            }
-        ],
+        "memory_writeback": memory_writeback,
         "next_experiments": ["售价上探至 34.99 测试需求弹性", "补充 sup_003 备选供应商询价"],
     }
     await rec.status(WorkflowStatus.retrospective.value)
