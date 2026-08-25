@@ -4,7 +4,7 @@
 
 面向中小跨境卖家的多租户 Agent 运营平台：选品研究 → 利润测算 → 供应商评估 → go/no-go 决策闸门 → 多平台 Listing 生成（生成-评审-重写闭环）→ 人工审批 → 模拟发布 → 运营监控 → 客服售后 → 复盘回流。
 
-> 当前进度：**M8 已完成，v1.4 全里程碑收官**。M0 行走骨架 → M1 工具治理层 → M2 LLM 接入（SiliconFlow/DeepSeek-V3.2）→ M3 三角真身（profit/supplier 数据工具化、critic LLM 审查、image brief 工具化）→ M4 长期记忆双线（供应商风险检索降权 / 复盘经验回写，租户隔离）+ 上下文压缩接缝 + token 硬熔断 → M5 真实人工审批（LangGraph interrupt/resume + SqliteSaver 检查点 + 审批中心前端）→ M6 客服 RAG（五类知识集合 + search_knowledge/get_order_status 治理工具 + 融合铁律：草稿时效与工具冲突即弃稿回退）→ M7 BadCase 红队（detector 注册表 + planner 输入脱敏 / Listing 扫描 / 记忆回写拦截三道防线 + 3 条红队 seed 的 eval CI 门禁）→ M8 打磨（主链路自用 RAG：planner/listing 主动检索 ops_playbook 运营知识库 + Demo 兜底缓存 ResultCache + docker-compose 一键起 + Bad Case 前端面板 + 一键 reset & replay）。核心设计：**LLM 只提议，代码做硬保证**——评分封顶、平台规则整形、绝对化措辞生成端改写（CLAIM_HEDGE_MAP）、critic 分级拦截（high 阻塞重写 / medium 仅记录）、决策 rubric 优先级、RAG 与工具冲突以工具为准，全由确定性代码兜底；无 key 自动降级 stub/hash 引擎，测试 CI 零出网。
+> 当前进度：**M9 已完成，v1.4 全里程碑收官**。M0 行走骨架 → M1 工具治理层 → M2 LLM 接入（SiliconFlow/DeepSeek-V3.2）→ M3 三角真身（profit/supplier 数据工具化、critic LLM 审查、image brief 工具化）→ M4 长期记忆双线（供应商风险检索降权 / 复盘经验回写，租户隔离）+ 上下文压缩接缝 + token 硬熔断 → M5 真实人工审批（LangGraph interrupt/resume + SqliteSaver 检查点 + 审批中心前端）→ M6 客服 RAG（五类知识集合 + search_knowledge/get_order_status 治理工具 + 融合铁律：草稿时效与工具冲突即弃稿回退）→ M7 BadCase 红队（detector 注册表 + planner 输入脱敏 / Listing 扫描 / 记忆回写拦截三道防线 + 3 条红队 seed 的 eval CI 门禁）→ M8 打磨（主链路自用 RAG：planner/listing 主动检索 ops_playbook 运营知识库 + Demo 兜底缓存 ResultCache + docker-compose 一键起 + Bad Case 前端面板 + 一键 reset & replay）→ M9 Agentic RAG（客服检索 agentic 化：改写/hybrid 双路召回/双重评级/零命中重试 + 真机爬取政策语料结构化切块入库 + 31 条黄金查询的 RAG 质量 CI 门禁）。核心设计：**LLM 只提议，代码做硬保证**——评分封顶、平台规则整形、绝对化措辞生成端改写（CLAIM_HEDGE_MAP）、critic 分级拦截（high 阻塞重写 / medium 仅记录）、决策 rubric 优先级、RAG 与工具冲突以工具为准，全由确定性代码兜底；无 key 自动降级 stub/hash 引擎，测试 CI 零出网。
 
 ## 快速开始
 
@@ -140,7 +140,8 @@ backend/src/app/
 ```bash
 pytest -q        # 单测（路由护栏上限）+ 集成（全链路对库跑通、跨租户 IDOR 阻断）
 ruff check src tests scripts evals
-python evals/run_evals.py   # 红队回归门禁：3 条 seed 全过才放行（exit 非 0 即防线被击穿）
+python evals/run_evals.py        # 红队回归门禁：3 条 seed 全过才放行（exit 非 0 即防线被击穿）
+python evals/rag_evals.py --gate # RAG 质量门禁：31 条黄金查询 Recall/MRR 低于定标线即 fail
 ```
 
 测试使用临时 SQLite 保持封闭；运行时默认连接真实 PostgreSQL（`.env` 的 `DATABASE_URL`）。
@@ -158,6 +159,7 @@ python evals/run_evals.py   # 红队回归门禁：3 条 seed 全过才放行（
 | M6 | 客服 RAG：`knowledge_base` 表（迁移 0003，五类知识 policy/platform_rule/product_info/faq/script，租户隔离）+ `search_knowledge` / `get_order_status` 治理工具（工具数 11→13）+ node_support 融合铁律（订单事实走工具、政策引用走 RAG、草稿时效与工具 ETA 冲突即整稿弃用回退模板）+ 退款工单强制升级 + seed 脚本 22 条知识（bge-m3） | ✅ |
 | M7 | Bad Case 红队：detector 注册表（input_injection / output_absolute_claims / memory_poisoning，纯确定性正则零 LLM，新类别=新注册不动主干）+ 三道防线接线（planner 输入脱敏 scrub_untrusted → Listing 全文扫描 → 复盘记忆回写拦截）+ `bad_cases` 表（迁移 0004）+ `GET /api/v1/badcases` + JSONL 导出脚本 + 3 条红队 seed 门禁（pytest 参数化 + standalone `run_evals.py` 双形态；红队曾真实击穿注入漏洞并推动脱敏防线落地） | ✅ |
 | M8 | 打磨收官：主链路自用 RAG（知识库新增 ops_playbook 运营打法类共 27 条；planner 检索选品方法论、listing 按平台检索 Listing 守则注入生成参考并留痕 knowledge_refs）+ Demo 兜底缓存（`ResultCache` 接口 + 精确 hash 实现 + `warm_demo_cache.py` 预热/离线重放）+ docker-compose 一键起全栈 + 前端 Bad Case 面板（第 5 页）+ 详情页防线扫描警示块 + `scripts/reset_and_replay.sh` 一键重置重放 | ✅ |
+| M9 | Agentic RAG：客服检索升级为「route 分类 → LLM 查询改写 → hybrid 双路（BM25 词面 + 余弦语义 → RRF 融合，返回项带 bm25/rrf 可解释分数）→ LLM∩确定性双重相关性评级 → 零命中重试 ≤2 轮」+ 真机爬取 Shopify/Amazon 帮助中心政策语料入库（结构感知切块：HTML 标题栈 → 章节 → 800 字贪心打包/120 重叠；curl 抓取绕开 TLS 指纹拦截）+ 统一三阶层中文分词器（修复纯中文 hash 零向量退化）+ RAG 评估体系（31 条黄金查询 Recall@3/@5/MRR@5/HitRate@5 分语料报表 + 忠实度护栏复用 M7 detector，CI `--gate` 门禁）+ 研究工具改关键词派生确定性数据（修复换选题仍返回旧品类数据的矛盾 bug），设计详见 `docs/RAG_DESIGN.md` | ✅ |
 
 ## 面试讲解要点
 

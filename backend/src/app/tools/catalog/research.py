@@ -1,8 +1,15 @@
-"""研究数据源工具目录（M2）：确定性 mock 数据，但走完整工具治理管线。
+"""研究数据源工具目录（M2 建，M9 升级为选题派生数据）：确定性 mock，走完整治理管线。
 
-真实数据源（Helium10/卖家精灵爬虫、Google Trends API 等）按同一 schema 替换实现即可，
-节点与 LLM 不感知（PRD §12.5 扩展边界）。LLM 只见工具输出，不接触数据实现。
+M9 修复：早期三个 handler 无视入参 keyword、无条件返回「床底收纳箱」的固定
+剧情数据——任何其他选题都会拿到与选题矛盾的证据，证据完整度必然低分被闸门
+拦下（用户实测：选题「水枪」配到储物箱数据）。现在所有数值/文案由关键词经
+sha256 确定性派生：同一选题数据恒定可复现，不同选题数据各归其位。
+
+真实数据源（Helium10/卖家精灵爬虫、Google Trends API 等）按同一 schema 替换
+实现即可，节点与 LLM 不感知（PRD §12.5 扩展边界）。LLM 只见工具输出。
 """
+
+import hashlib
 
 from pydantic import BaseModel, Field
 
@@ -62,74 +69,96 @@ class SearchCustomerReviewsOutput(BaseModel):
     pain_points: list[PainPoint]
 
 
+def _seed(keyword: str, salt: str) -> float:
+    """关键词+盐 → 稳定 [0,1) 伪随机（sha256，跨进程可复现，同选题数据恒定）。"""
+    digest = hashlib.sha256(f"{salt}:{keyword}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") / 2**64
+
+
+def _pick(keyword: str, salt: str, pool: list[str]) -> str:
+    return pool[int(_seed(keyword, salt) * len(pool)) % len(pool)]
+
+
+_CJK_SEASONALITY = [
+    "Q4 旺季（11-12 月搜索量 +40%）",
+    "夏季峰值（6-8 月搜索量 +35%）",
+    "全年平稳，无明显季节性",
+    "春季小高峰（3-4 月 +20%）",
+]
+_CJK_MODIFIERS = ["大容量", "便携", "家用", "儿童款", "升级款", "折叠", "多功能"]
+_LATIN_MODIFIERS = ["with wheels", "for small spaces", "heavy duty", "portable", "foldable"]
+_COMPLAINTS = ["做工一般", "包装易损", "尺寸偏小", "有异味", "耐用性差", "色差明显", "配件易丢"]
+_QUOTE_TEMPLATES = [
+    "买的{kw}用了两周就出了质量问题",
+    "收到{kw}的时候包装已经压坏了",
+    "{kw}和页面描述的尺寸有出入",
+    "这个{kw}用一次就不想用了",
+    "{kw}的做工配不上这个价格",
+]
+
+
+def _related_keywords(keyword: str) -> list[str]:
+    """相关词：选题词 + 确定性挑选的三个修饰词变体（中英文各一套修饰池）。"""
+    is_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in keyword)
+    modifiers = _CJK_MODIFIERS if is_cjk else _LATIN_MODIFIERS
+    picked: list[str] = []
+    for i in range(3):
+        pool = [m for m in modifiers if f"{keyword} {m}" not in picked] or modifiers
+        variant = f"{keyword} {_pick(keyword, f'rel{i}', pool)}"
+        if variant not in picked:
+            picked.append(variant)
+    return picked
+
+
 async def _trends(inp: SearchMarketTrendsInput, ctx: ToolContext) -> dict:
+    kw = inp.keyword
+    digest = hashlib.sha256(kw.encode("utf-8")).hexdigest()
     return {
-        "keyword": inp.keyword,
+        "keyword": kw,
         "target_market": inp.target_market,
-        "search_trend_pct_90d": 23.0,
-        "category_monthly_searches": 148000,
-        "related_keywords": [
-            "under bed storage with wheels",
-            "foldable storage bin queen bed",
-            "low profile under bed drawer",
-        ],
-        "seasonality": "Q4 旺季（11-12 月搜索量 +40%）",
-        "sources": ["trends_mock_001", "kw_planner_mock_002"],
+        "search_trend_pct_90d": round(5.0 + _seed(kw, "trend") * 40.0, 1),
+        "category_monthly_searches": int(20000 + _seed(kw, "vol") * 280000),
+        "related_keywords": _related_keywords(kw),
+        "seasonality": _pick(kw, "season", _CJK_SEASONALITY),
+        "sources": [f"trends_mock_{digest[:6]}", f"kw_planner_mock_{digest[6:12]}"],
     }
 
 
 async def _competitors(inp: SearchCompetitorListingsInput, ctx: ToolContext) -> dict:
-    return {
-        "keyword": inp.keyword,
-        "marketplace": inp.marketplace,
-        "competitors": [
+    kw = inp.keyword
+    brands = ["HomeHero", "MaidMAX", "Lifewit", "SimpleHouseware", "StorageWorks"]
+    competitors = []
+    for i in range(3):
+        competitors.append(
             {
-                "name": "StorageWorks Under Bed Drawer",
-                "price_usd": 32.99,
-                "rating": 4.4,
-                "review_count": 3210,
-                "top_complaint": "拉链易坏",
-            },
-            {
-                "name": "SimpleHouseware Foldable Bag",
-                "price_usd": 25.99,
-                "rating": 4.2,
-                "review_count": 1870,
-                "top_complaint": "无支撑易塌陷",
-            },
-            {
-                "name": "Generic Under Bed Box",
-                "price_usd": 21.99,
-                "rating": 3.9,
-                "review_count": 640,
-                "top_complaint": "异味明显",
-            },
-        ],
-    }
+                "name": f"{_pick(kw, f'brand{i}', brands)} {kw}",
+                "price_usd": round(15.99 + _seed(kw, f"price{i}") * 30.0, 2),
+                "rating": round(3.8 + _seed(kw, f"rating{i}") * 0.9, 1),
+                "review_count": int(500 + _seed(kw, f"reviews{i}") * 4500),
+                "top_complaint": _pick(kw, f"complaint{i}", _COMPLAINTS),
+            }
+        )
+    return {"keyword": kw, "marketplace": inp.marketplace, "competitors": competitors}
 
 
 async def _reviews(inp: SearchCustomerReviewsInput, ctx: ToolContext) -> dict:
-    return {
-        "keyword": inp.keyword,
-        "marketplace": inp.marketplace,
-        "pain_points": [
+    kw = inp.keyword
+    themes = ["做工一般", "包装易损", "尺寸不符", "异味明显", "耐用性差", "安装不便"]
+    shares = [round(15.0 + _seed(kw, f"share{i}") * 25.0, 1) for i in range(3)]
+    used_quotes: set[str] = set()
+    pain_points = []
+    for i in range(3):
+        pool = [t for t in _QUOTE_TEMPLATES if t not in used_quotes] or _QUOTE_TEMPLATES
+        quote_tpl = _pick(kw, f"quote{i}", pool)
+        used_quotes.add(quote_tpl)
+        pain_points.append(
             {
-                "theme": "中部易塌陷",
-                "share_pct": 34.0,
-                "sample_quote": "装两床被子中间就陷下去了",
-            },
-            {
-                "theme": "新箱异味",
-                "share_pct": 21.0,
-                "sample_quote": "拆开味道很大，晾了三天",
-            },
-            {
-                "theme": "拉链损坏",
-                "share_pct": 17.0,
-                "sample_quote": "第二周拉链头就掉了",
-            },
-        ],
-    }
+                "theme": _pick(kw, f"theme{i}", themes),
+                "share_pct": shares[i],
+                "sample_quote": quote_tpl.format(kw=kw),
+            }
+        )
+    return {"keyword": kw, "marketplace": inp.marketplace, "pain_points": pain_points}
 
 
 register(

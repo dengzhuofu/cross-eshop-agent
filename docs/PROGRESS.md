@@ -128,6 +128,15 @@
 - **CI 生效（v1.4 验收收口）**：.github/workflows/ci.yml 双 job——backend(ruff 含 evals → pytest → 红队门禁 run_evals.py) + frontend(npm ci → tsc+vite build)，README 挂徽章
 - **验收**:pytest 77 绿(+13 缓存单测 +2 主链路 RAG 集成);ruff/tsc 干净;红队门禁 3×PASS;浏览器端到端:面板筛选/跳转/证据展开、详情页扫描块与 knowledge_refs 全部实测通过,截图 4 张入 `docs/screenshots/`
 
+## ✅ M9 Agentic RAG:检索 agentic 化 + 真机语料入库 + 质量评估门禁(已完成,116 测试绿,真库真 LLM 冒烟通过)
+
+- **客服检索 agentic 化(node_support 升级)**:确定性 route 分类(实时事实/政策知识双通道)→ 查询改写(LLM JSON 失败降级 jieba 去停用词的确定性改写)→ hybrid 双路召回(BM25 词面 + 余弦语义 → RRF k=60 融合,返回项带 bm25/rrf 可解释分数)→ 相关性评级(LLM 判定 ∩ 确定性 coverage 评分取交集——LLM 只能收窄不能放宽)→ 零相关重试 ≤2 轮(第二轮用改写变体)→ 仅 relevant 命中进 rag_block;检索轨迹(retrieval_trace/rewrite_source/grade_source)全留痕。融合铁律不变:草稿时效与工具 ETA 冲突即弃稿回退模板
+- **混合检索底层**:`app/rag/tokenize.py` 统一三阶层分词器(latin 词 + jieba cut_for_search CJK 词 + CJK 单字),hash 嵌入与 BM25 共享同一 bag-of-words 契约——修复纯中文查询 hash 零向量退化(退换货 vs 退货 相似度 0.0→0.359);`search_knowledge` 加 query_text 参数开启 hybrid 模式,vector 模式向后兼容;工具 v2 加 mode/grade 参数
+- **真机爬取语料(crawl_helpcenter.py)**:Shopify×5 + Amazon 定价 + eBay 退货政策帮助中心页,curl 子进程抓取(httpx 被 Shopify/Amazon TLS 指纹拦 403;eBay JS 壳被 MIN_PAGE_CHARS=200 守卫跳过;Amazon 404 错误页与超短块入库后清洗剔除);结构感知切块 `app/rag/ingest.py`:HTML 标题栈 → 章节(短节前向合并)→ 800 字贪心打包/120 重叠/句界硬切;入库 23 块 WEB-* 语料(t_demo_acme,meta 带 source_url/heading_path 可溯源),幂等按 source 清理重灌。**引擎一致性实测**:种子与爬取存储向量均与 hash 重算余弦≈0(维度 1024)= 全部 api 引擎,无跨引擎漂移
+- **RAG 评估体系(evals/rag_golden.py + rag_evals.py)**:31 条黄金查询(种子五类 + ops_playbook + WEB 英文 query)+ 7 条忠实度护栏样本(夸大/投毒/注入必须拦截、客观事实回答零命中,复用 M7 detector 注册表同一组正则);指标 Recall@3/@5 / MRR@5 / HitRate@5 整体+分语料报表,未命中逐条归因;hermetic(临时 SQLite + 强制 hash 引擎,评测永不连真实 PG)。基线:Recall@3 90.3 / Recall@5 96.8 / MRR@5 86.0 / HitRate@5 100,七类全 100 命中;门禁线=基线−10~15pt(小样本类别线放单条翻车噪声之下),`--gate` 任一失守 exit 1;CI 增 RAG gate 步骤(红队门禁之后)
+- **研究工具矛盾 bug 修复(用户报障:选"水枪"返回的全是床下储物箱数据)**:research 三工具改为 sha256(关键词+盐) 派生确定性数据(趋势/竞品/评论全部内嵌选题词,同题稳定、异题发散),nodes.py stub 兜底的 demand_signal 同步 hashlib 派生;真机冒烟 run `bad66dfa`:儿童水枪玩具全链 completed,R1 证据 0.45 触发深化→R2 0.82 过闸,审计库 4 条工具调用输出全部为水枪品类数据,planner 命中 [OPS-SEL-01, OPS-TTS-CM1](主链路 ops_playbook hybrid 真机验证),support agentic 循环真机全开(route 双通/rewrite llm/grade llm∩det/refs=[POL-EXC-05,POL-RFD-02,POL-RTN-07 v2.1,FAQ-02])
+- **验收**:pytest 116 绿(+38:M9 检索单测 12/hybrid 集成 8/派生数据 6/切块 5/agentic 循环 7 等);ruff 含 evals 干净;RAG 门禁 PASS;真库冒烟通过后已重暖 demo 缓存
+
 ## 后续里程碑速查
 
 v1.4 全里程碑 M0-M8 ✅ 收官。可选后续：语义缓存 Phase 2（同 ResultCache 接口换 embedding 相似度 + semantic_cache_entries 迁移）、真实出图接缝、更多红队 seed。
@@ -139,6 +148,7 @@ bash backend/scripts/dev_postgres.sh          # 起 PG(15433)
 cd backend && .venv/Scripts/python -m ruff check src tests scripts evals
 .venv/Scripts/python -m pytest                # 77 个测试(RUN_LLM_SMOKE=1 追加真网冒烟)
 .venv/Scripts/python evals/run_evals.py       # 红队门禁:3 条 seed 全 PASS 才放行
+.venv/Scripts/python evals/rag_evals.py --gate    # RAG 质量门禁:31 条黄金查询 + 忠实度护栏
 .venv/Scripts/python scripts/warm_demo_cache.py   # 预热 Demo 兜底缓存(需真 key,一次性)
 bash scripts/reset_and_replay.sh              # 一键重置+种子+重放全链路(仓库根,cwd 任意)
 docker compose up --build                     # 一键起全栈(前端 :8088)

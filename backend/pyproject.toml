@@ -18,6 +18,7 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.2",
     "python-dotenv>=1.0",
+    "jieba>=0.42",
 ]
 
 [project.optional-dependencies]

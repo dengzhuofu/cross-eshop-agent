@@ -22,6 +22,7 @@ from app.persistence.models import (
     Workflow,
     WorkflowStep,
 )
+from app.rag.retrieval import _rank_desc, bm25_scores, rrf_fuse, rrf_score_map
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -353,11 +354,17 @@ class WorkflowRepository:
         return knowledge_id
 
     async def search_knowledge(self, *, tenant_id: str, category: str | None,
-                               query_embedding: list[float], top_k: int = 3) -> list[dict]:
-        """按租户（可选再按 category）取候选后 Python 余弦排序取 top_k。
+                               query_embedding: list[float], top_k: int = 3,
+                               query_text: str | None = None) -> list[dict]:
+        """按租户（可选再按 category）取候选后排序取 top_k（M9 混合检索）。
 
-        返回 [{id, category, title, content, similarity, ref, created_at}]，similarity 降序；
-        category=None 查全部五类。查询永远带 tenant_id 过滤（多租户铁律）。
+        query_text=None：纯余弦排序（M6 旧行为，旧调用方零感知）；
+        query_text 给定：BM25 词面 + 余弦语义双路 → RRF 融合（app.rag.retrieval），
+        返回项额外带 bm25 / rrf 两个可解释分数。余弦全零（离线 hash 引擎退化）
+        时 BM25 独立支撑排序——这正是双路设计的动机。
+        返回 [{id, category, title, content, similarity, ref, created_at[, bm25, rrf]}]，
+        按融合质量降序；category=None 查全部类别。
+        查询永远带 tenant_id 过滤（多租户铁律）。
         """
         filters = [KnowledgeRecord.tenant_id == tenant_id]
         if category:
@@ -380,8 +387,44 @@ class WorkflowRepository:
             }
             for r in rows
         ]
-        scored.sort(key=lambda item: item["similarity"], reverse=True)
-        return scored[:top_k]
+        if query_text is None:
+            scored.sort(key=lambda item: item["similarity"], reverse=True)
+            return scored[:top_k]
+        corpus = [item["content"] for item in scored]
+        cosines = [item["similarity"] for item in scored]
+        bm25 = bm25_scores(query_text, corpus)
+        rank_lists = [_rank_desc(bm25), _rank_desc(cosines)]
+        fused = rrf_fuse(rank_lists)
+        rrf_scores = rrf_score_map(rank_lists)
+        fused_rows = []
+        for idx in fused[:top_k]:
+            row = dict(scored[idx])
+            row["bm25"] = round(bm25[idx], 4)
+            row["rrf"] = round(rrf_scores[idx], 6)
+            fused_rows.append(row)
+        return fused_rows
+
+    async def delete_knowledge_by_source(self, *, tenant_id: str, source: str) -> int:
+        """删除 meta->>'source' 等于 source 的知识行（爬取语料重灌的幂等前提）。
+
+        JSON 列在 SQLite/PG 间无统一路径操作符，这里取候选后按 Python 过滤，
+        与 search_knowledge 同款做法；永远带 tenant_id 过滤（多租户铁律）。
+        """
+        async with self._factory() as s:
+            rows = (
+                (
+                    await s.execute(
+                        select(KnowledgeRecord).where(KnowledgeRecord.tenant_id == tenant_id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            doomed = [r for r in rows if (r.meta or {}).get("source") == source]
+            for r in doomed:
+                await s.delete(r)
+            await s.commit()
+        return len(doomed)
 
     # ---- bad_cases（红队/Bad Case 闭环，M7）----
 

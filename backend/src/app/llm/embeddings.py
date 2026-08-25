@@ -66,14 +66,37 @@ async def embed_texts(
         return [_hash_embedding(t) for t in texts], {"prompt_tokens": 0}, "hash"
 
 
+def _hash_tokens(text: str) -> list[str]:
+    """hash 引擎分词：与检索侧共用 app.rag.tokenize（拉丁词 + jieba CJK 词 + 单字）。
+
+    修复史：早期只认 [a-z0-9]+，纯中文文本全部落成零向量，离线检索退化成
+    任意序——中文是本平台主语料，CJK 必须进词袋。单字层保证「退换货/退货」
+    这类词面不同但字面重叠的说法仍有召回。rag 层缺席时退化为本地等价实现。
+    """
+    try:
+        from app.rag.tokenize import tokenize
+
+        return tokenize(text)
+    except ImportError:  # pragma: no cover - 防御：rag 模块缺席时的等价兜底
+        tokens = re.findall(r"[a-z0-9]+", text.lower())
+        try:
+            import jieba
+
+            tokens.extend(w for w in jieba.cut_for_search(text) if re.search(r"[\u4e00-\u9fff]", w))
+        except ImportError:  # pragma: no cover
+            pass
+        tokens.extend(re.findall(r"[\u4e00-\u9fff]", text))
+        return tokens
+
+
 def _hash_embedding(text: str) -> list[float]:
-    """确定性本地嵌入：小写后按非字母数字切词，每个词经 md5 哈希分桶计数再 L2 归一化。
+    """确定性本地嵌入：分词（拉丁词 + CJK 词）后每词经 md5 哈希分桶计数再 L2 归一化。
 
     内置 hash() 按进程加盐不可复现——必须用 hashlib.md5 把词转成稳定整数再对维度取模。
-    空文本（或不含字母数字）返回全零向量。
+    空文本（或不含可分词内容）返回全零向量。
     """
     counts = [0.0] * EMBEDDING_DIM
-    for token in re.findall(r"[a-z0-9]+", text.lower()):
+    for token in _hash_tokens(text):
         digest = hashlib.md5(token.encode("utf-8")).hexdigest()
         bucket = int(digest, 16) % EMBEDDING_DIM
         counts[bucket] += 1.0

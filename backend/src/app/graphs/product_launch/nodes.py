@@ -7,6 +7,7 @@
 每个自主决策点都写 AgentDecision（理由 + 备选项），对应 PRD §8.3 决策点清单。
 """
 
+import hashlib
 import json
 import logging
 import re
@@ -376,14 +377,19 @@ async def node_research(state: Dict[str, Any], config: RunnableConfig) -> Dict[s
             logger.exception("research llm path failed; falling back to stub")
 
     if brief is None:
-        # stub 剧情（对齐 PRD §24 demo 步骤 3）：首轮证据薄 → 低于阈值；深化后达标
+        # stub 剧情（对齐 PRD §24 demo 步骤 3）：首轮证据薄 → 低于阈值；深化后达标。
+        # 需求信号带选题词（M9 修复：曾硬编码床底收纳，其他选题拿到矛盾叙事）；
+        # 环比数由选题 md5 确定性派生，与 research 工具同思路
         score = 0.82 if rounds >= 1 else 0.55
+        trend_pct = round(
+            5.0 + int(hashlib.md5(idea.encode("utf-8")).hexdigest(), 16) % 3500 / 100.0, 1
+        )
         brief = {
             "round": rounds + 1,
             "evidence_score": score,
-            "demand_signal": "床底收纳近90天搜索环比 +23%",
-            "competitor_gap": "头部竞品普遍不支持折叠，差评集中在占空间",
-            "review_pain_points": ["易塌陷", "异味", "拉链损坏"],
+            "demand_signal": f"{idea} 近90天搜索环比 +{trend_pct}%",
+            "competitor_gap": "头部竞品同质化严重，差评集中在做工与包装",
+            "review_pain_points": ["做工一般", "包装易损", "尺寸不符"],
             "evidence_refs": STUB_REFS_ROUND1 if rounds == 0 else STUB_REFS_ROUND2,
         }
     score = float(brief["evidence_score"])
@@ -1278,10 +1284,231 @@ def _template_reply(
     return draft, refs
 
 
+# ---- M9 agentic RAG：客服检索循环的确定性构件（LLM 只提议，代码做硬保证）----
+
+SUPPORT_REWRITE_SYSTEM_PROMPT = """你是客服知识库检索的查询改写器。把客服工单问题改写成适合
+检索政策知识库的查询短语。只输出一个 JSON 对象，schema：{"query": "改写后的检索短语"}
+要求：中文短语且不超过 40 字；去掉工单号、寒暄等无语义成分；保留问题主题词
+（如 物流时效 / 退换货政策 / 退款流程）。"""
+
+SUPPORT_GRADE_SYSTEM_PROMPT = """你是客服知识检索质检员。给定工单问题与候选知识条目
+（编号[标题]：摘要），判断每条是否真正有助于回复该问题。只输出一个 JSON 对象，schema：
+{"relevant": ["条目编号或标题", ...]}
+要求：只列确实相关的条目，拿不准的一律不列；全部不相关就输出空数组。"""
+
+# 工单类型 → 检索路由基线（PRD §7.11）：实时事实走业务工具、政策知识走 RAG；
+# 未登记的类型退回关键词判定。退款类天然双真：退款资格要实时订单审核，话术要引政策。
+_SUPPORT_ROUTE_BY_TYPE = {
+    "where_is_my_order": {"realtime": True, "policy": True},
+    "shipping_issue": {"realtime": True, "policy": True},
+    "refund_request": {"realtime": True, "policy": True},
+    "policy_question": {"realtime": False, "policy": True},
+    "product_consult": {"realtime": False, "policy": True},
+}
+
+# 关键词兜底（对小写化文本做子串匹配）：实时=订单/物流状态语义；政策=规则/流程语义。
+# 注意「退款/退货」只算政策词不算实时词——纯咨询问政策不应触发实时工具语义。
+_SUPPORT_REALTIME_KW = (
+    "订单", "物流", "发货", "配送", "包裹", "快递", "签收", "到货",
+    "运单", "查件", "order", "shipment", "delivery", "tracking", "package",
+)
+_SUPPORT_POLICY_KW = (
+    "退款", "退货", "退换", "换货", "政策", "时效", "流程", "规则",
+    "补偿", "保修", "refund", "return", "exchange", "policy", "warranty",
+)
+
+
+def _classify_route(ticket: Dict[str, Any]) -> Dict[str, bool]:
+    """M9 确定性路由分类：该工单需要实时订单工具、政策知识库，还是都要。
+
+    纯规则零 LLM——路由本身是硬保证的一部分，不交模型自由发挥；结果进 step detail，
+    policy=False 时整个 RAG 循环跳过。
+    """
+    ttype = str(ticket.get("type") or "").strip().lower()
+    question = f"{ttype} {ticket.get('question') or ticket.get('subject') or ''}".lower()
+    base = _SUPPORT_ROUTE_BY_TYPE.get(ttype) or {}
+    realtime = bool(base.get("realtime")) or any(k in question for k in _SUPPORT_REALTIME_KW)
+    policy = bool(base.get("policy")) or any(k in question for k in _SUPPORT_POLICY_KW)
+    return {"realtime": realtime, "policy": policy}
+
+
+def _support_question_text(ticket: Dict[str, Any]) -> str:
+    """工单的自然语言化问题文本（改写种子）：补充描述 + 类型 + 单号 + 领域词。"""
+    parts = [
+        str(ticket.get("question") or "").strip(),
+        str(ticket.get("subject") or "").strip(),
+        str(ticket.get("type") or "").strip(),
+        str(ticket.get("order_id") or "").strip(),
+        "物流时效 退换货政策 退款流程",
+    ]
+    return " ".join(p for p in parts if p)
+
+
+def _det_rewrite(query: str) -> str:
+    """确定性查询改写：优先用并行交付的 app.rag.rewrite 契约实现；
+    模块未就绪时退化为本地极简清洗（剥标点/压空白），节点行为保持可预期。"""
+    try:
+        from app.rag.rewrite import deterministic_rewrite  # 并行契约模块（M9）
+    except ImportError:
+        cleaned = re.sub(r"[^\w\u4e00-\u9fff]+", " ", query or "")
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+        return (cleaned or (query or ""))[:120]
+    return (deterministic_rewrite(query or "") or (query or ""))[:120]
+
+
+async def _support_rewrite_query(
+    state: Dict[str, Any], question: str, aux_usage: Dict[str, int]
+) -> tuple[str, str]:
+    """检索查询改写：LLM 可用时先试 LLM 改写（单独一次小 JSON 调用）；
+    失败/不可用/输出不合契约一律降级 deterministic_rewrite 兜底。
+    返回 (query, rewrite_source)。"""
+    if _llm_available(state):
+        try:
+            parsed, u = await _call_llm_json(
+                SUPPORT_REWRITE_SYSTEM_PROMPT,
+                f"工单问题：{question}",
+                temperature=0.0,
+                max_tokens=80,
+            )
+            aux_usage["prompt"] += u["prompt"]
+            aux_usage["completion"] += u["completion"]
+            q = str(parsed.get("query") or "").strip()
+            if q:
+                return q[:200], "llm"
+        except Exception:  # noqa: BLE001 —— 改写失败不阻断主流程，确定性兜底
+            logger.warning("support query rewrite llm failed; fallback deterministic")
+    return _det_rewrite(question), "deterministic"
+
+
+def _retry_query(question: str, first_query: str) -> str:
+    """第二轮改写：对原始问题再做一次确定性改写；与首轮相同时叠加固定政策词组合，
+    保证重试轮的查询有区分度而不是原样复读。"""
+    alt = _det_rewrite(question)
+    if not alt or alt == first_query:
+        alt = f"{alt} 退货政策 退款流程 物流时效 补偿方案".strip()
+    return alt
+
+
+async def _grade_hits(
+    state: Dict[str, Any],
+    ticket: Dict[str, Any],
+    hits: List[Dict[str, Any]],
+    aux_usage: Dict[str, int],
+) -> tuple[List[Dict[str, Any]], str]:
+    """两级相关性判级（LLM 只收窄，硬保证在确定性一侧）：
+    底座=search_knowledge 返回的确定性 grade 字段（工具未交付该字段时保守视为相关，
+    兼容旧契约）；LLM 可用时再判级并与底座取交集。返回 (相关命中, grade_source)。"""
+    if not hits:
+        return [], "deterministic"
+    llm_keys: set[str] | None = None
+    if _llm_available(state):
+        catalog = "\n".join(
+            f"[{h.get('ref') or h.get('title')}] {h.get('title')}：{str(h.get('content'))[:160]}"
+            for h in hits
+        )
+        try:
+            parsed, u = await _call_llm_json(
+                SUPPORT_GRADE_SYSTEM_PROMPT,
+                f"工单问题：{_support_question_text(ticket)}\n候选条目：\n{catalog}",
+                temperature=0.0,
+                max_tokens=200,
+            )
+            aux_usage["prompt"] += u["prompt"]
+            aux_usage["completion"] += u["completion"]
+            raw = parsed.get("relevant")
+            # 输出不合契约（缺 relevant 键）视为判级不可用，退回确定性分级
+            if isinstance(raw, list):
+                llm_keys = {str(k).strip() for k in raw if str(k).strip()}
+        except Exception:  # noqa: BLE001 —— 判级失败退回确定性分级
+            logger.warning("support hit grading llm failed; fallback deterministic")
+    # 仅过滤确定性判级为「明确不相关」的命中：grade 缺失/None（旧契约或未分级）
+    # 一律保守视为相关，避免把没判级的命中误杀
+    det_relevant = [h for h in hits if h.get("grade") is not False]
+    if llm_keys is None:
+        return det_relevant, "deterministic"
+    relevant = [
+        h for h in det_relevant if h.get("ref") in llm_keys or h.get("title") in llm_keys
+    ]
+    return relevant, "llm+deterministic"
+
+
+async def _agentic_rag_retrieve(
+    state: Dict[str, Any],
+    ctx: ToolContext,
+    repo: Any,
+    ticket: Dict[str, Any],
+    *,
+    aux_usage: Dict[str, int],
+) -> Dict[str, Any]:
+    """M9 agentic RAG 循环：改写 → 混合检索 → 分级 → 相关命中为 0 再改写重试。
+
+    最多 2 轮防成本失控；每轮 {round, query, hits, relevant_count} 进 retrieval_trace
+    留痕；rag_block 只由「相关命中」构成。返回
+    {hits, trace, rewrite_source, grade_source, error}。
+    """
+    trace: List[Dict[str, Any]] = []
+    out: Dict[str, Any] = {
+        "hits": [],
+        "trace": trace,
+        "rewrite_source": None,
+        "grade_source": None,
+        "error": None,
+    }
+    first_query = ""
+    question = _support_question_text(ticket)
+    for rnd in range(2):
+        if rnd == 0:
+            query, out["rewrite_source"] = await _support_rewrite_query(
+                state, question, aux_usage
+            )
+            first_query = query
+        else:
+            query = _retry_query(question, first_query)
+        try:
+            res = await execute_tool(
+                "search_knowledge",
+                {"query_text": query[:400], "top_k": 5, "mode": "hybrid", "grade": True},
+                ctx,
+                repo,
+            )
+            hits = list((res.output or {}).get("results") or [])
+        except ToolError as exc:
+            out["error"] = str(exc)[:120]
+            trace.append(
+                {"round": rnd + 1, "query": query, "hits": 0, "relevant_count": 0}
+            )
+            break
+        relevant, out["grade_source"] = await _grade_hits(state, ticket, hits, aux_usage)
+        trace.append(
+            {
+                "round": rnd + 1,
+                "query": query,
+                "hits": len(hits),
+                "relevant_count": len(relevant),
+            }
+        )
+        if relevant:
+            out["hits"] = relevant
+            break
+    return out
+
+
+def _skipped_rag() -> Dict[str, Any]:
+    """policy=False 路由的占位结果：跳过检索循环，trace 为空。"""
+    return {
+        "hits": [],
+        "trace": [],
+        "rewrite_source": None,
+        "grade_source": None,
+        "error": None,
+    }
+
+
 async def node_support(state: Dict[str, Any], config: RunnableConfig) -> Dict[str, Any]:
-    """客服售后（M6，PRD §7.11）：订单事实走 get_order_status 工具，政策引用走
-    search_knowledge RAG；LLM 只起草，代码做融合铁律的硬保证——草稿里任何与工具
-    ETA 不一致的时效表述都判冲突，整稿弃用回退确定性模板（工具数据不可被覆盖）。
+    """客服售后（M6→M9，PRD §7.11）：agentic RAG——确定性路由分类 → 查询改写
+    （LLM 提议 / deterministic 兜底）→ 混合检索 → 相关性分级 → 零命中改写重试
+    （≤2 轮）。订单实时事实走 get_order_status 工具，LLM 只起草，代码做融合铁律的
+    硬保证——草稿里任何与工具 ETA 不一致的时效表述都判冲突，整稿弃用回退确定性模板。
     """
     rec = recorder_from_config(config)
     t0 = time.perf_counter()
@@ -1298,23 +1525,15 @@ async def node_support(state: Dict[str, Any], config: RunnableConfig) -> Dict[st
     except ToolError as exc:
         facts = {"order_id": ticket["order_id"], "found": False, "error": str(exc)}
 
-    rag: List[Dict[str, Any]] = []
-    rag_error = None
-    try:
-        res = await execute_tool(
-            "search_knowledge",
-            {
-                "query_text": (
-                    f"{ticket['type']} {ticket['order_id']} 物流时效 退换货政策 退款流程"
-                ),
-                "top_k": 3,
-            },
-            ctx,
-            repo,
-        )
-        rag = list(res.output.get("results") or [])
-    except ToolError as exc:
-        rag_error = str(exc)
+    # M9 确定性路由分类：policy=False 时跳过整个检索循环（rag 为空）
+    route = _classify_route(ticket)
+    aux_usage = {"prompt": 0, "completion": 0}  # 改写/判级等辅助 LLM 调用的计量
+    rag_res = (
+        await _agentic_rag_retrieve(state, ctx, repo, ticket, aux_usage=aux_usage)
+        if route["policy"]
+        else _skipped_rag()
+    )
+    rag = rag_res["hits"]
 
     template_draft, template_refs = _template_reply(ticket, facts, rag)
     draft, refs, draft_source = template_draft, template_refs, "template"
@@ -1363,6 +1582,13 @@ async def node_support(state: Dict[str, Any], config: RunnableConfig) -> Dict[st
         except LlmError as exc:
             conflict["llm_error"] = str(exc)[:120]
 
+    # 辅助 LLM 调用（改写/判级）的计量并入总账（PRD §17 接缝不留免费午餐）
+    if aux_usage["prompt"] or aux_usage["completion"]:
+        usage = dict(aux_usage) if usage is None else {
+            "prompt": usage["prompt"] + aux_usage["prompt"],
+            "completion": usage["completion"] + aux_usage["completion"],
+        }
+
     support = {
         "ticket_id": ticket["ticket_id"],
         "type": ticket["type"],
@@ -1385,10 +1611,15 @@ async def node_support(state: Dict[str, Any], config: RunnableConfig) -> Dict[st
         "refs": refs,
         "escalate": escalate,
         "conflict_check": conflict,
+        # M9 agentic RAG 痕迹：路由、逐轮检索轨迹、改写/分级来源（现有键全保留）
+        "route": route,
+        "retrieval_trace": rag_res["trace"],
+        "rewrite_source": rag_res["rewrite_source"],
+        "grade_source": rag_res["grade_source"],
         "rag_hits": len(rag),
     }
-    if rag_error:
-        detail["rag_error"] = rag_error[:120]
+    if rag_res["error"]:
+        detail["rag_error"] = rag_res["error"]
     if usage:
         detail["llm_usage"] = usage
     await rec.status(WorkflowStatus.handling_support.value)
@@ -1397,7 +1628,13 @@ async def node_support(state: Dict[str, Any], config: RunnableConfig) -> Dict[st
         agent="support_agent",
         decision_type=AgentDecisionType.support_reply.value,
         reasoning=(
-            "回复草稿融合：订单/物流实时事实取自 get_order_status 工具，政策引用取自 RAG 知识库；"
+            "回复草稿融合：订单/物流实时事实取自 get_order_status 工具，政策引用取自 agentic RAG"
+            + (
+                f"（改写→混合检索→分级，共 {len(rag_res['trace'])} 轮）"
+                if rag_res["trace"]
+                else "（本单路由判定无需政策检索）"
+            )
+            + "；"
             + (
                 f"检测到草稿时效与工具冲突（{conflict.get('draft_etas')} vs 工具 "
                 f"{conflict.get('tool_eta')}），按 PRD §7.11 铁律弃稿回退模板"

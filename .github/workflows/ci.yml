@@ -33,6 +33,11 @@ jobs:
       - name: Red-team gate
         run: python evals/run_evals.py
 
+      # RAG 检索质量门禁（M9）：黄金查询 Recall/MRR 低于定标线、hybrid 可解释
+      # 分数缺失或忠实度护栏失守即 fail（hermetic：hash 嵌入 + 临时库，零出网）
+      - name: RAG gate
+        run: python evals/rag_evals.py --gate
+
   frontend:
     runs-on: ubuntu-latest
     defaults:
