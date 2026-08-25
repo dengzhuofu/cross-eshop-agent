@@ -23,6 +23,7 @@ from app.guardrails.badcases import run_all_detectors, scrub_untrusted
 from app.llm import LlmError, extract_json, get_llm_client, llm_enabled
 from app.observability.recorder import recorder_from_config
 from app.persistence.memory import MemoryWorkflowRepository
+from app.rag.strategy import ESCALATION, deterministic_strategy, normalize_proposal
 from app.tools import ToolContext, ToolError, execute_tool
 
 logger = logging.getLogger(__name__)
@@ -1284,12 +1285,21 @@ def _template_reply(
     return draft, refs
 
 
-# ---- M9 agentic RAG：客服检索循环的确定性构件（LLM 只提议，代码做硬保证）----
+# ---- M9/M11 agentic RAG：客服检索循环的确定性构件（LLM 只提议，代码做硬保证）----
 
-SUPPORT_REWRITE_SYSTEM_PROMPT = """你是客服知识库检索的查询改写器。把客服工单问题改写成适合
-检索政策知识库的查询短语。只输出一个 JSON 对象，schema：{"query": "改写后的检索短语"}
-要求：中文短语且不超过 40 字；去掉工单号、寒暄等无语义成分；保留问题主题词
+SUPPORT_STRATEGY_SYSTEM_PROMPT = """你是客服知识库检索的策略规划器兼查询改写器。先判断该问题适合
+哪种检索增强策略，再给出改写后的检索短语。只输出一个 JSON 对象，schema：
+{"strategy": "direct|rewrite|hyde", "query": "改写后的检索短语", "reason": "选择理由(≤40字)"}
+策略定义：direct=原句直检，适合含订单号/型号/SKU 等精确词的短查询（改写会稀释精确词面）；
+rewrite=改写检索，默认，适合一般口语化问题；hyde=假设性回答增强，适合长而模糊、
+需要语义泛化的开放式问题（假设文档由另一个角色生成，你只负责标记策略）。
+query 要求：中文短语且不超过 40 字；去掉工单号、寒暄等无语义成分；保留问题主题词
 （如 物流时效 / 退换货政策 / 退款流程）。"""
+
+SUPPORT_HYDE_SYSTEM_PROMPT = """你是客服政策知识库的 HyDE 生成器：假设知识库里存在一条能回答该问题
+的条目，直接写出这条目的正文片段（2~3 句，客观政策口吻，覆盖问题的主题关键词，
+禁止编造具体时效天数/比例等数字承诺）。只输出一个 JSON 对象，schema：
+{"document": "假设条目正文"}"""
 
 SUPPORT_GRADE_SYSTEM_PROMPT = """你是客服知识检索质检员。给定工单问题与候选知识条目
 （编号[标题]：摘要），判断每条是否真正有助于回复该问题。只输出一个 JSON 对象，schema：
@@ -1356,28 +1366,71 @@ def _det_rewrite(query: str) -> str:
     return (deterministic_rewrite(query or "") or (query or ""))[:120]
 
 
-async def _support_rewrite_query(
+async def _support_plan_query(
     state: Dict[str, Any], question: str, aux_usage: Dict[str, int]
-) -> tuple[str, str]:
-    """检索查询改写：LLM 可用时先试 LLM 改写（单独一次小 JSON 调用）；
-    失败/不可用/输出不合契约一律降级 deterministic_rewrite 兜底。
-    返回 (query, rewrite_source)。"""
+) -> Dict[str, Any]:
+    """M11 首轮策略规划：确定性规则打底（deterministic_strategy），LLM 可用时
+    一次调用同时提议策略与改写查询——strategy 越界/缺失整体弃用回退规则
+    （normalize_proposal），query 缺失降级确定性改写。
+    返回 {strategy, query, query_source, strategy_source, reason}。"""
+    rule_strategy = deterministic_strategy(question)
+    plan: Dict[str, Any] = {
+        "strategy": rule_strategy,
+        "query": "",
+        "query_source": "deterministic",
+        "strategy_source": "rule",
+        "reason": "",
+    }
     if _llm_available(state):
         try:
             parsed, u = await _call_llm_json(
-                SUPPORT_REWRITE_SYSTEM_PROMPT,
+                SUPPORT_STRATEGY_SYSTEM_PROMPT,
                 f"工单问题：{question}",
                 temperature=0.0,
-                max_tokens=80,
+                max_tokens=140,
             )
             aux_usage["prompt"] += u["prompt"]
             aux_usage["completion"] += u["completion"]
-            q = str(parsed.get("query") or "").strip()
+            plan = normalize_proposal(parsed, plan)
+            q = str((parsed or {}).get("query") or "").strip()
             if q:
-                return q[:200], "llm"
-        except Exception:  # noqa: BLE001 —— 改写失败不阻断主流程，确定性兜底
-            logger.warning("support query rewrite llm failed; fallback deterministic")
-    return _det_rewrite(question), "deterministic"
+                plan["query"] = q[:200]
+                plan["query_source"] = "llm"
+            else:
+                plan["query"] = _det_rewrite(question)
+        except Exception:  # noqa: BLE001 —— 规划失败不阻断主流程，规则兜底
+            logger.warning("support strategy plan llm failed; fallback rules")
+            plan["query"] = _det_rewrite(question) if rule_strategy == "rewrite" else ""
+    elif rule_strategy == "rewrite":
+        plan["query"] = _det_rewrite(question)
+    return plan
+
+
+async def _support_hyde_document(
+    state: Dict[str, Any], question: str, aux_usage: Dict[str, int],
+    *, variant: bool = False,
+) -> str:
+    """M11 HyDE：LLM 生成假设性知识条目正文，只进检索语义路（词面路用用户原词）。
+    无 LLM/生成失败/输出为空一律返回 ""——调用方据此把策略降级 rewrite。
+    variant=True 时换角度重新生成（升级重试轮避免复读同一假设文档）。"""
+    if not _llm_available(state):
+        return ""
+    try:
+        user = f"工单问题：{question}" + (
+            "（换一个角度，侧重不同的主题关键词）" if variant else ""
+        )
+        parsed, u = await _call_llm_json(
+            SUPPORT_HYDE_SYSTEM_PROMPT,
+            user,
+            temperature=0.3,
+            max_tokens=200,
+        )
+        aux_usage["prompt"] += u["prompt"]
+        aux_usage["completion"] += u["completion"]
+        return str(parsed.get("document") or "").strip()[:600]
+    except Exception:  # noqa: BLE001 —— HyDE 失败降级，检索闭环不断
+        logger.warning("support hyde document llm failed; degrade to rewrite")
+        return ""
 
 
 def _retry_query(question: str, first_query: str) -> str:
@@ -1440,11 +1493,12 @@ async def _agentic_rag_retrieve(
     *,
     aux_usage: Dict[str, int],
 ) -> Dict[str, Any]:
-    """M9 agentic RAG 循环：改写 → 混合检索 → 分级 → 相关命中为 0 再改写重试。
+    """M9→M11 agentic RAG 循环：策略规划（direct/rewrite/hyde 自适应）→ 混合检索
+    （hyde 时假设文档只进语义路）→ 分级 → 零相关沿升级阶梯换策略重试（≤2 轮）。
 
-    最多 2 轮防成本失控；每轮 {round, query, hits, relevant_count} 进 retrieval_trace
-    留痕；rag_block 只由「相关命中」构成。返回
-    {hits, trace, rewrite_source, grade_source, error}。
+    最多 2 轮防成本失控；每轮 {round, query, strategy, hyde, hits, relevant_count}
+    进 retrieval_trace 留痕；rag_block 只由「相关命中」构成。返回
+    {hits, trace, rewrite_source, grade_source, strategy_source, strategy_reason, error}。
     """
     trace: List[Dict[str, Any]] = []
     out: Dict[str, Any] = {
@@ -1452,37 +1506,85 @@ async def _agentic_rag_retrieve(
         "trace": trace,
         "rewrite_source": None,
         "grade_source": None,
+        "strategy_source": None,
+        "strategy_reason": None,
         "error": None,
     }
-    first_query = ""
     question = _support_question_text(ticket)
+    plan = await _support_plan_query(state, question, aux_usage)
+    out["strategy_source"] = plan["strategy_source"]
+    out["strategy_reason"] = plan["reason"]
+
+    # 首轮执行形态由策略决定：direct=原句；rewrite=改写短语；hyde=原句+假设文档
+    # （假设文档生成失败/无 LLM → 降级 rewrite，HyDE 永不阻塞检索闭环）
+    cur_strategy = plan["strategy"]
+    cur_query = question
+    cur_hyde = ""
+    if cur_strategy == "hyde":
+        cur_hyde = await _support_hyde_document(state, question, aux_usage)
+        if not cur_hyde:
+            cur_strategy = "rewrite"
+    if cur_strategy == "rewrite":
+        cur_query = plan["query"] or _det_rewrite(question)
+    if cur_strategy == "rewrite":
+        out["rewrite_source"] = plan["query_source"]
+    elif cur_strategy == "hyde":
+        out["rewrite_source"] = "hyde"
+    else:
+        out["rewrite_source"] = "as-is"
+
+    first_query = ""
     for rnd in range(2):
-        if rnd == 0:
-            query, out["rewrite_source"] = await _support_rewrite_query(
-                state, question, aux_usage
-            )
-            first_query = query
-        else:
-            query = _retry_query(question, first_query)
+        if rnd == 1:
+            # 零相关命中 → 沿升级阶梯换策略（direct→rewrite→hyde；hyde 重试换角度）
+            nxt = ESCALATION.get(cur_strategy, "rewrite")
+            if nxt == "hyde":
+                cur_hyde = await _support_hyde_document(
+                    state, question, aux_usage, variant=(cur_strategy == "hyde")
+                )
+                if cur_hyde:
+                    cur_strategy, cur_query = "hyde", question
+                else:  # hyde 无从生成（无 LLM/失败）→ 退回确定性改写变体
+                    cur_strategy, cur_query, cur_hyde = (
+                        "rewrite",
+                        _retry_query(question, first_query),
+                        "",
+                    )
+            else:
+                cur_strategy, cur_query, cur_hyde = "rewrite", "", ""
+                cur_query = _retry_query(question, first_query)
+        first_query = first_query or cur_query
+        tool_input: Dict[str, Any] = {
+            "query_text": cur_query[:400],
+            "top_k": 5,
+            "mode": "hybrid",
+            "grade": True,
+        }
+        if cur_strategy == "hyde" and cur_hyde:
+            tool_input["hyde_text"] = cur_hyde[:600]
         try:
-            res = await execute_tool(
-                "search_knowledge",
-                {"query_text": query[:400], "top_k": 5, "mode": "hybrid", "grade": True},
-                ctx,
-                repo,
-            )
+            res = await execute_tool("search_knowledge", tool_input, ctx, repo)
             hits = list((res.output or {}).get("results") or [])
         except ToolError as exc:
             out["error"] = str(exc)[:120]
             trace.append(
-                {"round": rnd + 1, "query": query, "hits": 0, "relevant_count": 0}
+                {
+                    "round": rnd + 1,
+                    "query": cur_query,
+                    "strategy": cur_strategy,
+                    "hyde": bool(cur_hyde),
+                    "hits": 0,
+                    "relevant_count": 0,
+                }
             )
             break
         relevant, out["grade_source"] = await _grade_hits(state, ticket, hits, aux_usage)
         trace.append(
             {
                 "round": rnd + 1,
-                "query": query,
+                "query": cur_query,
+                "strategy": cur_strategy,
+                "hyde": bool(cur_hyde),
                 "hits": len(hits),
                 "relevant_count": len(relevant),
             }
@@ -1500,15 +1602,18 @@ def _skipped_rag() -> Dict[str, Any]:
         "trace": [],
         "rewrite_source": None,
         "grade_source": None,
+        "strategy_source": None,
+        "strategy_reason": None,
         "error": None,
     }
 
 
 async def node_support(state: Dict[str, Any], config: RunnableConfig) -> Dict[str, Any]:
-    """客服售后（M6→M9，PRD §7.11）：agentic RAG——确定性路由分类 → 查询改写
-    （LLM 提议 / deterministic 兜底）→ 混合检索 → 相关性分级 → 零命中改写重试
-    （≤2 轮）。订单实时事实走 get_order_status 工具，LLM 只起草，代码做融合铁律的
-    硬保证——草稿里任何与工具 ETA 不一致的时效表述都判冲突，整稿弃用回退确定性模板。
+    """客服售后（M6→M9/M11，PRD §7.11）：agentic RAG——确定性路由分类 → 检索策略
+    自适应规划（direct/rewrite/hyde，LLM 提议越界弃用 / 规则兜底；hyde 假设文档只进
+    语义路）→ 混合检索 → 相关性分级 → 零相关沿阶梯换策略重试（≤2 轮）。订单实时
+    事实走 get_order_status 工具，LLM 只起草，代码做融合铁律的硬保证——草稿里任何
+    与工具 ETA 不一致的时效表述都判冲突，整稿弃用回退确定性模板。
     """
     rec = recorder_from_config(config)
     t0 = time.perf_counter()
@@ -1611,11 +1716,13 @@ async def node_support(state: Dict[str, Any], config: RunnableConfig) -> Dict[st
         "refs": refs,
         "escalate": escalate,
         "conflict_check": conflict,
-        # M9 agentic RAG 痕迹：路由、逐轮检索轨迹、改写/分级来源（现有键全保留）
+        # M9/M11 agentic RAG 痕迹：路由、策略规划、逐轮检索轨迹、改写/分级来源（现有键全保留）
         "route": route,
         "retrieval_trace": rag_res["trace"],
         "rewrite_source": rag_res["rewrite_source"],
         "grade_source": rag_res["grade_source"],
+        "strategy_source": rag_res["strategy_source"],
+        "strategy_reason": rag_res["strategy_reason"],
         "rag_hits": len(rag),
     }
     if rag_res["error"]:
@@ -1630,7 +1737,7 @@ async def node_support(state: Dict[str, Any], config: RunnableConfig) -> Dict[st
         reasoning=(
             "回复草稿融合：订单/物流实时事实取自 get_order_status 工具，政策引用取自 agentic RAG"
             + (
-                f"（改写→混合检索→分级，共 {len(rag_res['trace'])} 轮）"
+                f"（策略规划→混合检索→分级，共 {len(rag_res['trace'])} 轮）"
                 if rag_res["trace"]
                 else "（本单路由判定无需政策检索）"
             )

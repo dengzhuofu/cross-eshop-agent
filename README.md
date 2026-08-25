@@ -4,7 +4,7 @@
 
 面向中小跨境卖家的多租户 Agent 运营平台：选品研究 → 利润测算 → 供应商评估 → go/no-go 决策闸门 → 多平台 Listing 生成（生成-评审-重写闭环）→ 人工审批 → 模拟发布 → 运营监控 → 客服售后 → 复盘回流。
 
-> 当前进度：**M9 已完成，v1.4 全里程碑收官**。M0 行走骨架 → M1 工具治理层 → M2 LLM 接入（SiliconFlow/DeepSeek-V3.2）→ M3 三角真身（profit/supplier 数据工具化、critic LLM 审查、image brief 工具化）→ M4 长期记忆双线（供应商风险检索降权 / 复盘经验回写，租户隔离）+ 上下文压缩接缝 + token 硬熔断 → M5 真实人工审批（LangGraph interrupt/resume + SqliteSaver 检查点 + 审批中心前端）→ M6 客服 RAG（五类知识集合 + search_knowledge/get_order_status 治理工具 + 融合铁律：草稿时效与工具冲突即弃稿回退）→ M7 BadCase 红队（detector 注册表 + planner 输入脱敏 / Listing 扫描 / 记忆回写拦截三道防线 + 3 条红队 seed 的 eval CI 门禁）→ M8 打磨（主链路自用 RAG：planner/listing 主动检索 ops_playbook 运营知识库 + Demo 兜底缓存 ResultCache + docker-compose 一键起 + Bad Case 前端面板 + 一键 reset & replay）→ M9 Agentic RAG（客服检索 agentic 化：改写/hybrid 双路召回/双重评级/零命中重试 + 真机爬取政策语料结构化切块入库 + 31 条黄金查询的 RAG 质量 CI 门禁）→ M10 反馈-分诊-沉淀闭环（用户对客服草稿/Listing 产出实时 👍/👎 反馈 → 分诊子 agent 确定性归类归因 + LLM 只收窄 → 三路沉淀：候选知识人工审批后进检索池 / 黄金查询候选喂 RAG 评估复核 / 违禁编造进 badcase 隔离，反馈永不直接改写线上行为）。核心设计：**LLM 只提议，代码做硬保证**——评分封顶、平台规则整形、绝对化措辞生成端改写（CLAIM_HEDGE_MAP）、critic 分级拦截（high 阻塞重写 / medium 仅记录）、决策 rubric 优先级、RAG 与工具冲突以工具为准，全由确定性代码兜底；无 key 自动降级 stub/hash 引擎，测试 CI 零出网。
+> 当前进度：**M9 已完成，v1.4 全里程碑收官**。M0 行走骨架 → M1 工具治理层 → M2 LLM 接入（SiliconFlow/DeepSeek-V3.2）→ M3 三角真身（profit/supplier 数据工具化、critic LLM 审查、image brief 工具化）→ M4 长期记忆双线（供应商风险检索降权 / 复盘经验回写，租户隔离）+ 上下文压缩接缝 + token 硬熔断 → M5 真实人工审批（LangGraph interrupt/resume + SqliteSaver 检查点 + 审批中心前端）→ M6 客服 RAG（五类知识集合 + search_knowledge/get_order_status 治理工具 + 融合铁律：草稿时效与工具冲突即弃稿回退）→ M7 BadCase 红队（detector 注册表 + planner 输入脱敏 / Listing 扫描 / 记忆回写拦截三道防线 + 3 条红队 seed 的 eval CI 门禁）→ M8 打磨（主链路自用 RAG：planner/listing 主动检索 ops_playbook 运营知识库 + Demo 兜底缓存 ResultCache + docker-compose 一键起 + Bad Case 前端面板 + 一键 reset & replay）→ M9 Agentic RAG（客服检索 agentic 化：改写/hybrid 双路召回/双重评级/零命中重试 + 真机爬取政策语料结构化切块入库 + 31 条黄金查询的 RAG 质量 CI 门禁）→ M10 反馈-分诊-沉淀闭环（用户对客服草稿/Listing 产出实时 👍/👎 反馈 → 分诊子 agent 确定性归类归因 + LLM 只收窄 → 三路沉淀：候选知识人工审批后进检索池 / 黄金查询候选喂 RAG 评估复核 / 违禁编造进 badcase 隔离，反馈永不直接改写线上行为）→ M11 策略自适应检索（agentic RAG 再进化：按问题自主决策检索增强方案——短且含单号/型号等精确信号 direct 直检保真、长而口语的问题式查询 HyDE 假设文档做语义泛化、默认 rewrite 改写；LLM 提议策略越界整体弃用回退确定性规则；HyDE 假设文档只进语义路 max 余弦、BM25 词面永远用用户原词不被 LLM 文本污染；零相关沿 direct→rewrite→hyde 升级阶梯换策略重试，无 LLM 时 hyde 自动降级闭环不断）。核心设计：**LLM 只提议，代码做硬保证**——评分封顶、平台规则整形、绝对化措辞生成端改写（CLAIM_HEDGE_MAP）、critic 分级拦截（high 阻塞重写 / medium 仅记录）、决策 rubric 优先级、RAG 与工具冲突以工具为准，全由确定性代码兜底；无 key 自动降级 stub/hash 引擎，测试 CI 零出网。
 
 ## 快速开始
 
@@ -161,6 +161,7 @@ python evals/rag_evals.py --gate # RAG 质量门禁：31 条黄金查询 Recall/
 | M8 | 打磨收官：主链路自用 RAG（知识库新增 ops_playbook 运营打法类共 27 条；planner 检索选品方法论、listing 按平台检索 Listing 守则注入生成参考并留痕 knowledge_refs）+ Demo 兜底缓存（`ResultCache` 接口 + 精确 hash 实现 + `warm_demo_cache.py` 预热/离线重放）+ docker-compose 一键起全栈 + 前端 Bad Case 面板（第 5 页）+ 详情页防线扫描警示块 + `scripts/reset_and_replay.sh` 一键重置重放 | ✅ |
 | M9 | Agentic RAG：客服检索升级为「route 分类 → LLM 查询改写 → hybrid 双路（BM25 词面 + 余弦语义 → RRF 融合，返回项带 bm25/rrf 可解释分数）→ LLM∩确定性双重相关性评级 → 零命中重试 ≤2 轮」+ 真机爬取 Shopify/Amazon 帮助中心政策语料入库（结构感知切块：HTML 标题栈 → 章节 → 800 字贪心打包/120 重叠；curl 抓取绕开 TLS 指纹拦截）+ 统一三阶层中文分词器（修复纯中文 hash 零向量退化）+ RAG 评估体系（31 条黄金查询 Recall@3/@5/MRR@5/HitRate@5 分语料报表 + 忠实度护栏复用 M7 detector，CI `--gate` 门禁）+ 研究工具改关键词派生确定性数据（修复换选题仍返回旧品类数据的矛盾 bug），设计详见 `docs/RAG_DESIGN.md` | ✅ |
 | M10 | 反馈-分诊-沉淀闭环：步骤级反馈组件（客服草稿/Listing 产出 👍/👎 + 评论）→ `feedback_records` 表（迁移 0005）→ 分诊子 agent（`app/feedback/triage.py`：9 类 taxonomy，确定性关键词规则打底 + 护栏 detector 优先 + LLM 归因只收窄、越界类别整体弃用）→ 按类路由沉淀：kb_gap→候选知识（`status=candidate` 不进检索池，人工 approve 才生效/reject 删除）、retrieval_miss→黄金查询候选集（JSONL + `rag_evals --feedback-report` 人工复核转正）、违禁/编造/时效/数据矛盾→M7 badcase 隔离 + 经验记忆回写；反馈文本先 `scrub_untrusted` 脱敏再进任何沉淀通道 + 前端 Bad Case 面板新增待审候选知识/反馈分诊记录两区 | ✅ |
+| M11 | 策略自适应检索：agentic RAG 首轮前置「策略规划」——`app/rag/strategy.py` 确定性规则按问题形态选 {direct 原句直检 / rewrite 查询改写 / hyde 假设性回答}（短+精确信号直检防词面被稀释、长+问题式走 HyDE 语义泛化），LLM 单次调用同时提议策略+改写短语、枚举外提议整体弃用回退规则；HyDE 由独立生成器产出假设政策条目，经 `search_knowledge` 新参 `hyde_text` 只进语义路（repo 层 `query_embedding_alt` 对每篇取 max 余弦），BM25 词面保持用户原词；零相关沿 ESCALATION 阶梯 direct→rewrite→hyde 换策略重试 ≤2 轮（hyde 重试换角度重新生成假设文档），retrieval_trace 逐轮留痕 {round,query,strategy,hyde,hits,relevant_count}；无 LLM 全路径降级确定性、闭环不断 | ✅ |
 
 ## 面试讲解要点
 
@@ -171,6 +172,7 @@ python evals/rag_evals.py --gate # RAG 质量门禁：31 条黄金查询 Recall/
 - M6 融合铁律：客服草稿里一切时效表述与 OMS 工具实时 ETA 不一致 → 整稿弃用回退模板。RAG 检索来的知识永远覆盖不了工具实时事实；
 - M7 红队把这条立场变成了可回归的资产：三条 seed（注入 / 违禁声明 / 记忆投毒）进 CI 门禁，首版 seed 就真实击穿过一个注入泄漏漏洞，由此催生了 `scrub_untrusted`（与 detector 共享同一组正则，检出什么就剥什么）。
 - M10 反馈飞轮同构：用户负反馈由分诊子 agent 归类归因后路由沉淀——知识缺口起草成候选知识但 `status=candidate` 永不直接进检索池（人工审批硬门槛）、检索未命中进黄金查询候选集等人工复核转正、违禁/编造直接进 M7 隔离状态机；反馈文本先脱敏再落任何通道，闭环越转越准但永远没有"反馈直改线上"的捷径。
+- M11 策略规划同构：检索增强方案（direct/rewrite/hyde）由确定性规则按问题形态打底，LLM 提议越界整体弃用回退规则结果；HyDE 假设文档是 LLM 生成的文本，所以只许进语义路（max 余弦）而永远不进 BM25 词面路——「不可信产物限定作用域」与 scrub_untrusted 是同一思想在检索侧的投影。
 
 **工具治理是安全边界不是形式**：13 个工具全走唯一 ToolExecutor 七步管线（schema 校验 → 跨租户引用检测 → 审批门 → 幂等回放 → 超时 → 输出校验 → 审计落库）；租户上下文系统注入，工具签名永不收 tenant_id 参数——靠类型签名让"越权调用"写不出来。
 

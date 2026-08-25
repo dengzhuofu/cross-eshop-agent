@@ -41,6 +41,14 @@ class SearchKnowledgeInput(BaseModel):
         default=False,
         description="是否对每个命中做确定性相关性分级（返回 grade/grade_score 字段）",
     )
+    hyde_text: str | None = Field(
+        default=None,
+        max_length=600,
+        description=(
+            "HyDE 假设性回答文本（M11，可选）：LLM 生成的『假想知识条目正文』，"
+            "只参与语义路（与查询向量逐文档取最大余弦），词面路仍用 query_text 原词"
+        ),
+    )
 
 
 class KnowledgeHit(BaseModel):
@@ -64,7 +72,8 @@ class SearchKnowledgeOutput(BaseModel):
 async def _search(inp: SearchKnowledgeInput, ctx: ToolContext) -> dict:
     from app.persistence.repositories.workflow_repo import WorkflowRepository
 
-    vectors, _usage, engine = await embed_texts([inp.query_text])
+    texts = [inp.query_text] + ([inp.hyde_text] if inp.hyde_text else [])
+    vectors, _usage, engine = await embed_texts(texts)
     repo = WorkflowRepository()
     rows = await repo.search_knowledge(
         tenant_id=ctx.tenant_id,
@@ -72,6 +81,7 @@ async def _search(inp: SearchKnowledgeInput, ctx: ToolContext) -> dict:
         query_embedding=vectors[0],
         top_k=inp.top_k,
         query_text=inp.query_text if inp.mode == "hybrid" else None,
+        query_embedding_alt=vectors[1] if inp.hyde_text else None,
     )
     results = []
     for r in rows:

@@ -148,16 +148,26 @@
 - **踩坑**:端口 8000 残留旧进程(无 M10 路由)导致前端提交 404 静默失败,widget 在 open 态不展示 error 的 UX 缺陷顺带记录;`draft_candidate_knowledge` 曾把 `return fallback` 排在 fallback 定义前(UnboundLocalError,pyflakes 不报局部先引用,靠真机跑通暴露)
 - **验收**:pytest 138 绿(M10 新增 18:分诊单测 10+反馈闭环集成 8,含候选审批门/正式语料不可审/黄金集写入/badcase 隔离/租户隔离/API roundtrip);ruff 干净;tsc+vite 构建通过;红队+RAG 双门禁不受影响
 
+## ✅ M11 策略自适应检索:direct/rewrite/hyde 自主决策 + HyDE 只进语义路(已完成,152 测试绿)
+
+- **动机**:M9 的 agentic RAG 对所有问题一律先改写——但含订单号/型号的短查询改写反而稀释精确词面,长而模糊的口语问题单靠关键词改写又泛化不动。M11 把「选哪种增强方案」本身变成 agent 决策点:每条工单先做策略规划再执行
+- **策略层(`app/rag/strategy.py`)**:{direct 原句直检 / rewrite 查询改写 / hyde 假设性回答} 三策略枚举 + ESCALATION 升级阶梯(direct→rewrite→hyde,hyde 为终点)都是代码常量;`deterministic_strategy` 规则零网络可单测(≤14 字且含 `[A-Za-z0-9]{4,}` 精确信号→direct;≥40 字问题式无信号→hyde;默认 rewrite);`normalize_proposal` 校验 LLM 提议——枚举外/缺失整体弃用原样返回规则结果,合法只覆盖 strategy/strategy_source/reason 三字段(LLM 只收窄不放宽)
+- **节点接线(`node_support`)**:`_support_plan_query` 单次 LLM 调用同时提议策略+改写短语(失败降级规则);`_support_hyde_document` 独立生成器产出假设政策条目(2~3 句客观口吻、禁止编造具体数字承诺),variant=True 换角度重生成供升级轮防复读;首轮执行形态由策略决定(direct=原句/rewrite=改写短语/hyde=原句+假设文档进工具参数)
+- **HyDE 只进语义路**:`search_knowledge` 新参 `hyde_text` → 工具层对 [query_text, hyde_text] 分别嵌入 → repo 层 `query_embedding_alt` 对每篇文档取 max(cos 主查询, cos 假设文档)——假设文档是 LLM 生成的不可信文本,**永远不进 BM25 词面路**,词面匹配保持用户原词(与 scrub_untrusted「限定不可信产物作用域」同思想);无 LLM 时 hyde 自动降级 rewrite,闭环不断
+- **留痕与计量**:retrieval_trace 逐轮 {round,query,strategy,hyde,hits,relevant_count};detail 新增 strategy_source(rule/llm)/strategy_reason;rewrite_source 语义扩展为 as-is(直检)/hyde/deterministic/llm;辅助调用(规划/HyDE/判级)全部并入 llm_usage 总账
+- **踩坑**:`normalize_proposal` 首版把提议来源写进 `source` 键而 plan 结构用 `strategy_source`——LLM 提议实际生效(trace 策略=hyde)但来源标记永远是 rule,纯靠新增集成测试断言 strategy_source==llm 才暴露(实现与测试同天写时,断言键名对不上实现键名的错位最容易漏);另:测试里让查询向量=B 文档自身向量会造成双满分平序,alt 向量测试要用第三方向量才能钉死 max 语义
+- **验收**:pytest 152 绿(M11 新增 14:策略单测 9+循环集成 5,含阶梯一致性/规则边界/提议校验/离线降级/hyde 工具参数与换角度重生成/direct 提议升级/越界弃用/alt 向量 max 余弦);ruff 干净
+
 ## 后续里程碑速查
 
-v1.4 全里程碑 M0-M9 ✅ + M10 反馈闭环 ✅。可选后续：语义缓存 Phase 2（同 ResultCache 接口换 embedding 相似度 + semantic_cache_entries 迁移）、真实出图接缝、更多红队 seed。
+v1.4 全里程碑 M0-M9 ✅ + M10 反馈闭环 ✅ + M11 策略自适应检索 ✅。可选后续：语义缓存 Phase 2（同 ResultCache 接口换 embedding 相似度 + semantic_cache_entries 迁移）、真实出图接缝、更多红队 seed。
 
 ## 验证命令
 
 ```bash
 bash backend/scripts/dev_postgres.sh          # 起 PG(15433)
 cd backend && .venv/Scripts/python -m ruff check src tests scripts evals
-.venv/Scripts/python -m pytest                # 138 个测试(RUN_LLM_SMOKE=1 追加真网冒烟)
+.venv/Scripts/python -m pytest                # 152 个测试(RUN_LLM_SMOKE=1 追加真网冒烟)
 .venv/Scripts/python evals/run_evals.py       # 红队门禁:3 条 seed 全 PASS 才放行
 .venv/Scripts/python evals/rag_evals.py --gate    # RAG 质量门禁:31 条黄金查询 + 忠实度护栏
 .venv/Scripts/python evals/rag_evals.py --feedback-report   # 复核反馈沉淀的候选黄金查询(M10)

@@ -356,13 +356,17 @@ class WorkflowRepository:
 
     async def search_knowledge(self, *, tenant_id: str, category: str | None,
                                query_embedding: list[float], top_k: int = 3,
-                               query_text: str | None = None) -> list[dict]:
+                               query_text: str | None = None,
+                               query_embedding_alt: list[float] | None = None) -> list[dict]:
         """按租户（可选再按 category）取候选后排序取 top_k（M9 混合检索）。
 
         query_text=None：纯余弦排序（M6 旧行为，旧调用方零感知）；
         query_text 给定：BM25 词面 + 余弦语义双路 → RRF 融合（app.rag.retrieval），
         返回项额外带 bm25 / rrf 两个可解释分数。余弦全零（离线 hash 引擎退化）
         时 BM25 独立支撑排序——这正是双路设计的动机。
+        query_embedding_alt（M11 HyDE）：假设性文档的向量，语义路对每篇文档取
+        max(cos(主查询, 文档), cos(假设文档, 文档))——假设文档只增强语义召回，
+        词面路永远用 query_text 用户原词（LLM 生成的文本不进 BM25）。
         返回 [{id, category, title, content, similarity, ref, created_at[, bm25, rrf]}]，
         按融合质量降序；category=None 查全部类别。
         查询永远带 tenant_id 过滤（多租户铁律）。
@@ -379,13 +383,20 @@ class WorkflowRepository:
         # M10：候选知识（status=candidate，来自反馈沉淀）未经审批不进检索池——
         # 语料质量硬保证，Python 侧 meta 过滤与 delete_knowledge_by_source 同款
         rows = [r for r in rows if (r.meta or {}).get("status") != "candidate"]
+        def _sem(vec: list[float]) -> float:
+            """语义路得分：主查询向量与 HyDE 向量（可选）逐文档取最大余弦。"""
+            c = _cosine(query_embedding, vec)
+            if query_embedding_alt:
+                c = max(c, _cosine(query_embedding_alt, vec))
+            return c
+
         scored = [
             {
                 "id": r.id,
                 "category": r.category,
                 "title": r.title,
                 "content": r.content,
-                "similarity": _cosine(query_embedding, r.embedding or []),
+                "similarity": _sem(r.embedding or []),
                 "ref": r.ref,
                 "created_at": r.created_at.isoformat() if r.created_at else "",
             }
