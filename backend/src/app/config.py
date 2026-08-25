@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     #   readwrite —— 读 + 写：预热脚本用它把真实 LLM 产出落盘，供日后 read 模式重放。
     demo_cache_mode: str = "off"
     demo_cache_path: str = ".localdata/demo_cache.json"
+    # M10：检索未命中类反馈沉淀的黄金查询候选集（JSONL，人工复核后转正进 rag_golden）
+    feedback_golden_path: str = ".localdata/feedback_golden.jsonl"
 
 
 @lru_cache

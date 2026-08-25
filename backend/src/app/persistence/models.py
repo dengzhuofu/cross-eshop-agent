@@ -168,3 +168,28 @@ class BadCaseRecord(Base):
     status: Mapped[str] = mapped_column(String(16), default="detected")
     outcome: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class FeedbackRecord(Base):
+    """用户反馈（M10 反馈-分诊-沉淀闭环）。
+
+    用户对任一 agent 产物（客服草稿/Listing 文案/研究结论）给 👍/👎 + 评论/引用，
+    分诊子 agent 归类归因后把 triage 结果写回本行；沉淀路由按 category 把改进
+    信号送到合适组件（候选知识 / 黄金查询候选集 / bad_cases / 长期记忆）。
+    本表是闭环的入口账本：feedback → triage → sink 的每一步都可追溯。
+    """
+
+    __tablename__ = "feedback_records"
+    __table_args__ = (Index("ix_feedback_records_tenant_status", "tenant_id", "status"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    workflow_id: Mapped[str | None] = mapped_column(ForeignKey("workflows.id"), index=True)
+    target_type: Mapped[str] = mapped_column(String(32))  # support_draft / listing_copy / plan ...
+    target_key: Mapped[str | None] = mapped_column(String(128))
+    verdict: Mapped[str] = mapped_column(String(16))  # helpful | unhelpful
+    comment: Mapped[str | None] = mapped_column(Text)
+    quote: Mapped[str | None] = mapped_column(Text)  # 用户选中的问题文本片段
+    triage: Mapped[dict | None] = mapped_column(JSON)  # {category, root_cause, sink, ...}
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending/triaged/dismissed
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())

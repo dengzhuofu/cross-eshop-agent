@@ -15,6 +15,7 @@ from app.persistence.db import session_factory
 from app.persistence.models import (
     AgentDecision,
     BadCaseRecord,
+    FeedbackRecord,
     KnowledgeRecord,
     MemoryRecord,
     Tenant,
@@ -375,6 +376,9 @@ class WorkflowRepository:
                 .scalars()
                 .all()
             )
+        # M10：候选知识（status=candidate，来自反馈沉淀）未经审批不进检索池——
+        # 语料质量硬保证，Python 侧 meta 过滤与 delete_knowledge_by_source 同款
+        rows = [r for r in rows if (r.meta or {}).get("status") != "candidate"]
         scored = [
             {
                 "id": r.id,
@@ -425,6 +429,149 @@ class WorkflowRepository:
                 await s.delete(r)
             await s.commit()
         return len(doomed)
+
+    async def review_candidate_knowledge(self, *, tenant_id: str, knowledge_id: str,
+                                         action: str) -> bool:
+        """候选知识审批（M10 闭环的人工闸门）：approve → status 置 approved 进检索池；
+        reject → 直接删除。仅对 origin=feedback 且 status=candidate 的行生效——
+        正式语料（种子/爬取）不可经此通道改动。UPDATE 带 tenant_id 过滤，
+        跨租户/非候选行返回 False（上层转 404 防枚举）。
+        """
+        if action not in {"approve", "reject"}:
+            return False
+        async with self._factory() as s:
+            row = (
+                await s.execute(
+                    select(KnowledgeRecord).where(
+                        KnowledgeRecord.id == knowledge_id,
+                        KnowledgeRecord.tenant_id == tenant_id,
+                    )
+                )
+            ).scalars().first()
+            if row is None:
+                return False
+            meta = dict(row.meta or {})
+            if meta.get("origin") != "feedback" or meta.get("status") != "candidate":
+                return False
+            if action == "reject":
+                await s.delete(row)
+            else:
+                meta["status"] = "approved"
+                row.meta = meta
+            await s.commit()
+            return True
+
+    async def list_knowledge_candidates(self, *, tenant_id: str,
+                                        limit: int = 50) -> list[dict]:
+        """待审候选知识（origin=feedback 且 status=candidate），created_at 倒序。"""
+        async with self._factory() as s:
+            rows = (
+                (
+                    await s.execute(
+                        select(KnowledgeRecord)
+                        .where(KnowledgeRecord.tenant_id == tenant_id)
+                        .order_by(KnowledgeRecord.created_at.desc())
+                        .limit(limit * 4)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        cands = [
+            r for r in rows
+            if (r.meta or {}).get("origin") == "feedback"
+            and (r.meta or {}).get("status") == "candidate"
+        ]
+        return [
+            {
+                "id": r.id,
+                "category": r.category,
+                "title": r.title,
+                "content": r.content,
+                "ref": r.ref,
+                "meta": r.meta,
+                "created_at": r.created_at.isoformat() if r.created_at else "",
+            }
+            for r in cands[:limit]
+        ]
+
+    # ---- feedback_records（反馈-分诊-沉淀闭环，M10）----
+
+    async def insert_feedback(self, *, tenant_id: str, target_type: str, verdict: str,
+                              workflow_id: str | None = None, target_key: str | None = None,
+                              comment: str | None = None, quote: str | None = None) -> str:
+        """写入一条用户反馈（status=pending），返回 feedback_id（uuid4().hex）。"""
+        fid = uuid.uuid4().hex
+        async with self._factory() as s:
+            s.add(
+                FeedbackRecord(
+                    id=fid,
+                    tenant_id=tenant_id,
+                    workflow_id=workflow_id,
+                    target_type=target_type,
+                    target_key=target_key,
+                    verdict=verdict,
+                    comment=comment,
+                    quote=quote,
+                    status="pending",
+                )
+            )
+            await s.commit()
+        return fid
+
+    async def list_feedback(self, *, tenant_id: str, workflow_id: str | None = None,
+                            status: str | None = None, limit: int = 50) -> list[dict]:
+        """按租户过滤列出反馈（可再按 workflow/status），created_at 倒序。"""
+        filters = [FeedbackRecord.tenant_id == tenant_id]
+        if workflow_id:
+            filters.append(FeedbackRecord.workflow_id == workflow_id)
+        if status:
+            filters.append(FeedbackRecord.status == status)
+        async with self._factory() as s:
+            rows = (
+                (
+                    await s.execute(
+                        select(FeedbackRecord)
+                        .where(*filters)
+                        .order_by(FeedbackRecord.created_at.desc())
+                        .limit(limit)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return [
+            {
+                "id": r.id,
+                "workflow_id": r.workflow_id,
+                "target_type": r.target_type,
+                "target_key": r.target_key,
+                "verdict": r.verdict,
+                "comment": r.comment,
+                "quote": r.quote,
+                "triage": r.triage,
+                "status": r.status,
+                "created_at": r.created_at.isoformat() if r.created_at else "",
+            }
+            for r in rows
+        ]
+
+    async def update_feedback_triage(self, tenant_id: str, feedback_id: str,
+                                     triage: dict, status: str) -> bool:
+        """分诊完成后回写 triage 结果与状态；带 tenant_id 过滤防 IDOR。"""
+        if status not in {"triaged", "dismissed", "pending"}:
+            return False
+        async with self._factory() as s:
+            res = await s.execute(
+                update(FeedbackRecord)
+                .where(
+                    FeedbackRecord.id == feedback_id,
+                    FeedbackRecord.tenant_id == tenant_id,
+                )
+                .values(triage=triage, status=status)
+            )
+            await s.commit()
+            return bool(res.rowcount)
 
     # ---- bad_cases（红队/Bad Case 闭环，M7）----
 

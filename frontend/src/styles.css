@@ -1445,3 +1445,38 @@ body {
 .scan-findings-text {
   color: var(--text-dim);
 }
+
+/* ---- M10 反馈-分诊-沉淀闭环 ---- */
+.fb-widget {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.fb-widget.fb-done {
+  padding: 6px 8px;
+  border: 1px dashed var(--border, #3a3f4b);
+  border-radius: 6px;
+}
+
+.fb-input-row {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+}
+
+.fb-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.fb-error {
+  color: var(--red, #e5484d);
+  font-size: 12px;
+}
+
+.fb-section {
+  margin-top: 20px;
+}

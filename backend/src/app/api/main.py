@@ -16,6 +16,7 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from app.config import get_settings
+from app.feedback.triage import triage_and_route
 from app.graphs.product_launch.agent import build_graph
 from app.graphs.product_launch.state import initial_state
 from app.multitenancy.context import TenantContext, reset_current_tenant, set_current_tenant
@@ -377,3 +378,96 @@ async def update_badcase_status(
     if not ok:
         raise HTTPException(status_code=404, detail="not found")
     return {"id": bad_case_id, "status": body.status, "outcome": body.note or None}
+
+
+# ---- 反馈-分诊-沉淀闭环（M10）----
+
+
+class FeedbackBody(BaseModel):
+    """用户反馈请求：对任一 agent 产物 👍/👎 + 可选评论与引用片段。
+
+    comment/quote 是不可信输入——分诊模块内先过 scrub_untrusted 再进任何沉淀通道。
+    """
+
+    workflow_id: Optional[str] = None
+    target_type: Literal["support_draft", "listing_copy", "plan", "research_brief", "other"]
+    target_key: Optional[str] = Field(default=None, max_length=128)
+    verdict: Literal["helpful", "unhelpful"]
+    comment: str = Field(default="", max_length=1000)
+    quote: str = Field(default="", max_length=1000)
+
+
+@app.post("/api/v1/feedback", status_code=201)
+async def create_feedback(body: FeedbackBody, tenant: TenantContext = Depends(tenant_dep)) -> dict:
+    """反馈入口：落账本 → 分诊子 agent 归类归因 → 沉淀路由（同步完成，返回分诊结果）。
+
+    分诊的 LLM 增强/知识草稿失败都自动降级规则结果——接口永不 500 于 LLM 故障。
+    """
+    repo = WorkflowRepository()
+    fid = await repo.insert_feedback(
+        tenant_id=tenant.tenant_id,
+        workflow_id=body.workflow_id,
+        target_type=body.target_type,
+        target_key=body.target_key,
+        verdict=body.verdict,
+        comment=body.comment or None,
+        quote=body.quote or None,
+    )
+    triage = await triage_and_route(
+        repo,
+        tenant_id=tenant.tenant_id,
+        feedback_id=fid,
+        workflow_id=body.workflow_id,
+        target_type=body.target_type,
+        verdict=body.verdict,
+        comment=body.comment or "",
+        quote=body.quote or "",
+    )
+    return {"id": fid, **triage}
+
+
+@app.get("/api/v1/feedback")
+async def list_feedback_route(
+    limit: int = 50,
+    status: Optional[str] = None,
+    workflow_id: Optional[str] = None,
+    tenant: TenantContext = Depends(tenant_dep),
+) -> dict:
+    """本租户反馈列表（含 triage 结果），供前端反馈面板/闭环观测。"""
+    items = await WorkflowRepository().list_feedback(
+        tenant_id=tenant.tenant_id, workflow_id=workflow_id, status=status, limit=limit
+    )
+    return {"items": items}
+
+
+class KnowledgeReviewBody(BaseModel):
+    """候选知识审批请求（M10）：approve 进检索池 / reject 删除。"""
+
+    action: Literal["approve", "reject"]
+    note: str = Field(default="", max_length=300)
+
+
+@app.post("/api/v1/knowledge/{knowledge_id}/review")
+async def review_candidate_knowledge(
+    knowledge_id: str, body: KnowledgeReviewBody, tenant: TenantContext = Depends(tenant_dep)
+) -> dict:
+    """候选知识审批闸门：反馈沉淀的知识条目 status=candidate 不进检索池，
+    人工 approve 后才生效（语料质量硬保证）。仅 origin=feedback 的候选行可动，
+    正式语料不可经此通道改动；跨租户/非候选行一律 404 防枚举。
+    """
+    ok = await WorkflowRepository().review_candidate_knowledge(
+        tenant_id=tenant.tenant_id, knowledge_id=knowledge_id, action=body.action
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="not found")
+    return {"id": knowledge_id, "action": body.action}
+
+
+@app.get("/api/v1/knowledge/candidates")
+async def list_candidate_knowledge(
+    limit: int = 50, tenant: TenantContext = Depends(tenant_dep)
+) -> dict:
+    """待审候选知识列表（M10：反馈沉淀、status=candidate，不含正式语料）。"""
+    repo = WorkflowRepository()
+    rows = await repo.list_knowledge_candidates(tenant_id=tenant.tenant_id, limit=limit)
+    return {"items": rows}

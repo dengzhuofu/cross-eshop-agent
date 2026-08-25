@@ -10,6 +10,11 @@ import type {
   BadCase,
   BadCaseStatusPayload,
   BadCaseStatusResult,
+  FeedbackPayload,
+  FeedbackCreated,
+  FeedbackItem,
+  KnowledgeCandidate,
+  KnowledgeReviewPayload,
 } from './types';
 
 /** GET /api/v1/badcases 的查询参数(全部可选) */
@@ -135,6 +140,40 @@ export class ApiClient {
    */
   updateBadCaseStatus(id: string, payload: BadCaseStatusPayload): Promise<BadCaseStatusResult> {
     return this.request<BadCaseStatusResult>(`/api/v1/badcases/${id}/status`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  /**
+   * POST /api/v1/feedback — 反馈入口(M10):同步返回分诊子 agent 的归类归因结果。
+   * LLM 增强/草稿失败自动降级规则分诊,接口不因 LLM 故障失败。
+   */
+  createFeedback(payload: FeedbackPayload): Promise<FeedbackCreated> {
+    return this.request<FeedbackCreated>('/api/v1/feedback', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  /** GET /api/v1/feedback?limit= — 本租户反馈列表(含 triage 结果) */
+  listFeedback(limit = 50): Promise<{ items: FeedbackItem[] }> {
+    return this.request<{ items: FeedbackItem[] }>(`/api/v1/feedback?limit=${limit}`);
+  }
+
+  /** GET /api/v1/knowledge/candidates — 待审候选知识(反馈沉淀,status=candidate) */
+  listKnowledgeCandidates(limit = 50): Promise<{ items: KnowledgeCandidate[] }> {
+    return this.request<{ items: KnowledgeCandidate[] }>(
+      `/api/v1/knowledge/candidates?limit=${limit}`,
+    );
+  }
+
+  /**
+   * POST /api/v1/knowledge/{id}/review — 候选知识审批闸门:
+   * approve 进检索池 / reject 删除;跨租户与非候选行 404 防枚举。
+   */
+  reviewKnowledge(id: string, payload: KnowledgeReviewPayload): Promise<{ id: string; action: string }> {
+    return this.request(`/api/v1/knowledge/${id}/review`, {
       method: 'POST',
       body: JSON.stringify(payload),
     });

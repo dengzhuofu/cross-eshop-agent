@@ -1,13 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ApiClient } from '../api';
-import type { BadCase, BadCaseTerminalStatus } from '../types';
+import type { BadCase, BadCaseTerminalStatus, FeedbackItem, KnowledgeCandidate } from '../types';
 import {
   BADCASE_CATEGORY_LABELS,
   BADCASE_STATUS_LABELS,
   DETECTOR_LABELS,
+  FEEDBACK_CATEGORY_LABELS,
+  FEEDBACK_SINK_LABELS,
+  KNOWLEDGE_REVIEW_LABELS,
   badCaseCategoryTone,
   badCaseSeverityTone,
   badCaseStatusTone,
+  feedbackCategoryTone,
   formatTime,
 } from '../labels';
 import StatusBadge from './StatusBadge';
@@ -60,12 +64,22 @@ export default function BadCasePanel({ client, onOpenDetail }: Props) {
   const [category, setCategory] = useState<string>('all');
   /** 正在提交处置请求的坏例 id(防双击重复提交) */
   const [busyId, setBusyId] = useState<string | null>(null);
+  // ---- M10 反馈-分诊-沉淀闭环 ----
+  const [feedback, setFeedback] = useState<FeedbackItem[] | null>(null);
+  const [candidates, setCandidates] = useState<KnowledgeCandidate[] | null>(null);
+  const [busyKid, setBusyKid] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
     try {
-      const res = await client.listBadCases({ limit: 100 });
-      setItems(res.items);
+      const [bc, fb, cand] = await Promise.all([
+        client.listBadCases({ limit: 100 }),
+        client.listFeedback(30).catch(() => ({ items: [] as FeedbackItem[] })),
+        client.listKnowledgeCandidates(30).catch(() => ({ items: [] as KnowledgeCandidate[] })),
+      ]);
+      setItems(bc.items);
+      setFeedback(fb.items);
+      setCandidates(cand.items);
     } catch (e) {
       setItems([]);
       setError(e instanceof Error ? e.message : String(e));
@@ -91,6 +105,24 @@ export default function BadCasePanel({ client, onOpenDetail }: Props) {
       }
     },
     [busyId, client, load],
+  );
+
+  /** M10 候选知识审批:approve 进检索池 / reject 删除,就地刷新 */
+  const handleReview = useCallback(
+    async (kid: string, action: 'approve' | 'reject') => {
+      if (busyKid) return;
+      setBusyKid(kid);
+      setError(null);
+      try {
+        await client.reviewKnowledge(kid, { action });
+        await load();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusyKid(null);
+      }
+    },
+    [busyKid, client, load],
   );
 
   // 进入页面与租户切换(client 重建)时重新拉取,并重置筛选
@@ -260,6 +292,116 @@ export default function BadCasePanel({ client, onOpenDetail }: Props) {
             );
           })}
         </div>
+      )}
+
+      {/* ---- M10 反馈-分诊-沉淀闭环 ---- */}
+      {candidates !== null && candidates.length > 0 && (
+        <section className="fb-section">
+          <h3 className="section-title">待审候选知识（{candidates.length}）</h3>
+          <p className="page-desc">
+            来自用户反馈的知识缺口由分诊子 agent 起草为候选条目；审批通过才进入 RAG
+            检索池，驳回则删除——反馈永远不会未经把关直接改写语料。
+          </p>
+          <div className="badcase-list">
+            {candidates.map((c) => (
+              <article key={c.id} className="card badcase-card bar-blue">
+                <header className="badcase-head">
+                  <div className="badcase-badges">
+                    <StatusBadge label="候选知识" tone="blue" />
+                    <StatusBadge label={c.category} tone="gray" />
+                  </div>
+                  <time className="dc-time">{formatTime(c.created_at)}</time>
+                </header>
+                <p className="badcase-summary">{c.title}</p>
+                <CollapsibleJson data={{ ref: c.ref, content: c.content }} label="查看内容" />
+                <footer className="badcase-foot">
+                  <span className="cell-mono cell-faint">{c.ref}</span>
+                  <span className="btn-row">
+                    <button
+                      type="button"
+                      className="btn small"
+                      disabled={busyKid === c.id}
+                      onClick={() => void handleReview(c.id, 'approve')}
+                      title="通过后该条目立即进入 RAG 检索池"
+                    >
+                      {KNOWLEDGE_REVIEW_LABELS.approve}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn small ghost"
+                      disabled={busyKid === c.id}
+                      onClick={() => void handleReview(c.id, 'reject')}
+                      title="驳回并删除该候选条目"
+                    >
+                      {KNOWLEDGE_REVIEW_LABELS.reject}
+                    </button>
+                  </span>
+                </footer>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {feedback !== null && feedback.length > 0 && (
+        <section className="fb-section">
+          <h3 className="section-title">反馈分诊记录（{feedback.length}）</h3>
+          <p className="page-desc">
+            用户对 agent 产物的实时反馈与分诊子 agent 的归类归因——每条都路由到了明确的沉淀位置。
+          </p>
+          <div className="badcase-list">
+            {feedback.map((f) => {
+              // 闭包内属性访问不保留窄化，先落局部变量
+              const wid = f.workflow_id;
+              return (
+              <article
+                key={f.id}
+                className={`card badcase-card${wid ? ' row-click' : ''}`}
+                onClick={wid ? () => onOpenDetail(wid) : undefined}
+              >
+                <header className="badcase-head">
+                  <div className="badcase-badges">
+                    <StatusBadge
+                      label={f.verdict === 'helpful' ? '👍 有帮助' : '👎 有问题'}
+                      tone={f.verdict === 'helpful' ? 'green' : 'red'}
+                    />
+                    {f.triage && (
+                      <StatusBadge
+                        label={FEEDBACK_CATEGORY_LABELS[f.triage.category] ?? f.triage.category}
+                        tone={feedbackCategoryTone(f.triage.category)}
+                      />
+                    )}
+                    {f.triage && (
+                      <StatusBadge
+                        label={`→ ${FEEDBACK_SINK_LABELS[f.triage.sink] ?? f.triage.sink}`}
+                        tone="purple"
+                      />
+                    )}
+                  </div>
+                  <time className="dc-time">{formatTime(f.created_at)}</time>
+                </header>
+                <p className="badcase-summary">
+                  {[f.comment, f.quote].filter(Boolean).join(' ｜ ') || '—'}
+                </p>
+                {f.triage?.root_cause && (
+                  <p className="cell-faint">归因:{f.triage.root_cause}</p>
+                )}
+                <footer className="badcase-foot">
+                  <span className="cell-mono cell-faint">
+                    分诊来源:{f.triage?.source ?? '-'} · 目标:{f.target_type}
+                    {f.target_key ? `#${f.target_key}` : ''}
+                  </span>
+                  {f.workflow_id && (
+                    <span className="cell-mono cell-faint badcase-wfid">
+                      工作流 {f.workflow_id} →
+                    </span>
+                  )}
+                </footer>
+              </article>
+              );
+            })}
+          </div>
+        </section>
       )}
     </section>
   );

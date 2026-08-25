@@ -126,7 +126,12 @@ export default function WorkflowDetail({ client, workflowId, onBack }: Props) {
 
       {/* ---- 主体:左时间线 / 右决策流,下方审计表 ---- */}
       <div className="detail-grid">
-        <StepTimeline steps={trace?.steps ?? []} loading={!trace} />
+        <StepTimeline
+          steps={trace?.steps ?? []}
+          loading={!trace}
+          client={client}
+          workflowId={workflowId}
+        />
         <DecisionCards decisions={trace?.decisions ?? []} loading={!trace} />
       </div>
 

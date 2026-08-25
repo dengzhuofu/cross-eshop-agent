@@ -19,6 +19,7 @@
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 import tempfile
@@ -166,9 +167,44 @@ def run_faithfulness() -> tuple[int, list[str]]:
     return len(fails), fails
 
 
+async def run_feedback_report(repo: WorkflowRepository) -> int:
+    """复核反馈沉淀的候选黄金查询（M10 闭环 → 评估侧）。
+
+    读 feedback_golden.jsonl（retrieval_miss 类反馈的沉淀），逐条跑检索打印 top5，
+    供人工确认后转正进 rag_golden.py。只报告不设门禁——候选集没有 expect_refs，
+    转正前不该有硬线。
+    """
+    path = Path(os.environ.get("FEEDBACK_GOLDEN_PATH") or
+                Path(__file__).parent.parent / ".localdata" / "feedback_golden.jsonl")
+    if not path.exists():
+        print("\n反馈候选黄金集：无（.localdata/feedback_golden.jsonl 不存在）")
+        return 0
+    candidates = [json.loads(line) for line in
+                  path.read_text(encoding="utf-8").strip().splitlines() if line.strip()]
+    if not candidates:
+        print("\n反馈候选黄金集：空")
+        return 0
+    print(f"\n反馈候选黄金集复核（{len(candidates)} 条，人工确认后转正进 rag_golden.py）：")
+
+    out: dict[str, list[str]] = {}
+    for c in candidates:
+        vecs, _u, _e = await embed_texts([c["query"]])
+        hits = await repo.search_knowledge(
+            tenant_id=TENANT_ID, category=None, query_embedding=vecs[0],
+            top_k=TOP_K, query_text=c["query"],
+        )
+        out[c["query"]] = [h.get("ref") or h["title"][:20] for h in hits]
+    for c in candidates:
+        print(f"  ? [{c.get('note', '')[:40]}] {c['query']}")
+        print(f"      top5: {out[c['query']]}")
+    return len(candidates)
+
+
 async def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--gate", action="store_true", help="CI 门禁模式：低于阈值退出码 1")
+    parser.add_argument("--feedback-report", action="store_true",
+                        help="复核反馈沉淀的候选黄金查询（M10 闭环，只报告不设线）")
     args = parser.parse_args()
 
     await init_db()
@@ -219,6 +255,9 @@ async def main() -> int:
     if ff_fails:
         failures.append("faithfulness")
         print(f"  ✗ 忠实度失守: {ff_notes}")
+
+    if args.feedback_report:
+        await run_feedback_report(repo)
 
     await adispose_database()
 

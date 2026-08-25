@@ -195,3 +195,66 @@ export interface BadCaseScanDetail {
   findings?: unknown;
   [key: string]: unknown;
 }
+
+// ---- M10 反馈-分诊-沉淀闭环 ----
+
+/** 分诊子 agent 的归类归因结果(POST /api/v1/feedback 响应与列表项内嵌) */
+export interface FeedbackTriage {
+  /** 固定 taxonomy:positive/kb_gap/retrieval_miss/hallucination/claim_violation/... */
+  category: string;
+  root_cause: string;
+  /** 沉淀 sink:none/knowledge_candidate/golden_candidate/badcase_memory/memory_only */
+  sink: string;
+  /** rule | llm(LLM 增强失败自动回退 rule) */
+  source: string;
+  rule_hits?: string[];
+  suggested_fix?: string;
+  /** 沉淀产物引用:候选知识 id / 黄金集文件路径等 */
+  sink_ref?: string | null;
+}
+
+/** POST /api/v1/feedback 载荷 */
+export interface FeedbackPayload {
+  workflow_id?: string | null;
+  target_type: 'support_draft' | 'listing_copy' | 'plan' | 'research_brief' | 'other';
+  target_key?: string | null;
+  verdict: 'helpful' | 'unhelpful';
+  comment?: string;
+  quote?: string;
+}
+
+/** POST /api/v1/feedback 响应(201,同步返回分诊结果) */
+export interface FeedbackCreated extends FeedbackTriage {
+  id: string;
+  status: string;
+}
+
+/** GET /api/v1/feedback 列表项 */
+export interface FeedbackItem {
+  id: string;
+  workflow_id: string | null;
+  target_type: string;
+  target_key: string | null;
+  verdict: 'helpful' | 'unhelpful';
+  comment: string | null;
+  quote: string | null;
+  triage: FeedbackTriage | null;
+  status: string;
+  created_at: string;
+}
+
+/** GET /api/v1/knowledge/candidates 列表项(反馈沉淀的待审知识) */
+export interface KnowledgeCandidate {
+  id: string;
+  category: string;
+  title: string;
+  content: string;
+  ref: string | null;
+  meta: { feedback_id?: string; status?: string; origin?: string } & Record<string, unknown>;
+  created_at: string;
+}
+
+/** POST /api/v1/knowledge/{id}/review 载荷 */
+export interface KnowledgeReviewPayload {
+  action: 'approve' | 'reject';
+}

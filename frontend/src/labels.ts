@@ -300,3 +300,47 @@ export function formatTime(iso: string | null | undefined): string {
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleString('zh-CN', { hour12: false });
 }
+
+// ---- M10 反馈-分诊-沉淀闭环 ----
+
+/** 分诊 taxonomy 中文标签(与后端 TAXONOMY 一一对应) */
+export const FEEDBACK_CATEGORY_LABELS: Record<string, string> = {
+  positive: '正反馈',
+  kb_gap: '知识缺口',
+  retrieval_miss: '检索未命中',
+  hallucination: '内容编造',
+  claim_violation: '违禁声明',
+  stale_conflict: '时效冲突',
+  data_mismatch: '数据矛盾',
+  tone_quality: '语气表达',
+  other: '待人工复核',
+};
+
+/** 沉淀 sink 中文标签 */
+export const FEEDBACK_SINK_LABELS: Record<string, string> = {
+  none: '仅留痕',
+  knowledge_candidate: '候选知识(待审批)',
+  golden_candidate: '黄金查询候选集',
+  badcase_memory: 'BadCase 隔离 + 经验记忆',
+  memory_only: '经验记忆',
+};
+
+export function feedbackCategoryTone(category: string): Tone {
+  if (category === 'positive') return 'green';
+  if (category === 'kb_gap' || category === 'retrieval_miss') return 'amber';
+  if (
+    category === 'hallucination' ||
+    category === 'claim_violation' ||
+    category === 'stale_conflict' ||
+    category === 'data_mismatch'
+  ) {
+    return 'red';
+  }
+  return 'blue';
+}
+
+/** 候选知识审批动作文案 */
+export const KNOWLEDGE_REVIEW_LABELS: Record<string, string> = {
+  approve: '通过入库',
+  reject: '驳回删除',
+};

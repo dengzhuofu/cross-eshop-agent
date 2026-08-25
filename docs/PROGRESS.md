@@ -137,18 +137,30 @@
 - **研究工具矛盾 bug 修复(用户报障:选"水枪"返回的全是床下储物箱数据)**:research 三工具改为 sha256(关键词+盐) 派生确定性数据(趋势/竞品/评论全部内嵌选题词,同题稳定、异题发散),nodes.py stub 兜底的 demand_signal 同步 hashlib 派生;真机冒烟 run `bad66dfa`:儿童水枪玩具全链 completed,R1 证据 0.45 触发深化→R2 0.82 过闸,审计库 4 条工具调用输出全部为水枪品类数据,planner 命中 [OPS-SEL-01, OPS-TTS-CM1](主链路 ops_playbook hybrid 真机验证),support agentic 循环真机全开(route 双通/rewrite llm/grade llm∩det/refs=[POL-EXC-05,POL-RFD-02,POL-RTN-07 v2.1,FAQ-02])
 - **验收**:pytest 116 绿(+38:M9 检索单测 12/hybrid 集成 8/派生数据 6/切块 5/agentic 循环 7 等);ruff 含 evals 干净;RAG 门禁 PASS;真库冒烟通过后已重暖 demo 缓存
 
+## ✅ M10 反馈-分诊-沉淀闭环:分诊子 agent + 三路沉淀 + 人工把关(已完成,138 测试绿,真库真 LLM 浏览器端到端验证)
+
+- **分诊子 agent(`app/feedback/triage.py`)**:9 类 taxonomy(positive/kb_gap/retrieval_miss/hallucination/claim_violation/stale_conflict/data_mismatch/tone_quality/other)每类绑定唯一沉淀 sink;`deterministic_triage` 三层打底(M7 护栏 detector 命中强制类别 > 中文英文关键词规则按优先级 > other 兜底,零网络可单测);`llm_enrich_triage` 只允许在规则结果之上细化归因——category 不在 taxonomy 内整体弃用回退规则结果(LLM 只收窄不放宽,与全仓库立场同构);`draft_candidate_knowledge` LLM 起草 FAQ 候选,失败降级确定性模板——草稿质量可以低,闭环不能断
+- **三路沉淀(sink 路由)**:kb_gap→候选知识(insert_knowledge `meta={origin:feedback,status:candidate}`,**search_knowledge 过滤掉 candidate 行——候选永不进检索池**,人工 `POST /knowledge/{id}/review` approve 翻转 status 才生效/reject 物理删除,且仅 origin=feedback 可动、正式语料不可审);retrieval_miss→黄金查询候选集(`.localdata/feedback_golden.jsonl` 追加,`rag_evals.py --feedback-report` 打印 top5 供人工复核后转正进 rag_golden.py,文件 gitignore 不污染语料库);hallucination/claim_violation/stale_conflict/data_mismatch→M7 badcase 隔离(detector=feedback_triage:*,status=quarantined)+ 全部负反馈额外回写经验记忆(kind=feedback,先脱敏);positive→留痕 dismissed
+- **持久化与 API**:迁移 0005 `feedback_records`(verdict/comment/quote/triage JSON/status,租户索引);`POST /api/v1/feedback`(verdict Literal 校验 422,插入即触发 triage_and_route 返回分诊结果)、`GET /api/v1/feedback`、`GET /api/v1/knowledge/candidates`;repo 层全部带 tenant_id 过滤,跨租户审批 404 防枚举
+- **安全不变量**:反馈文本按不可信输入处理,`scrub_untrusted` 先脱敏再进任何沉淀通道(与 M7 detector 同组正则);候选知识人工审批是硬门槛——反馈永远不可能未经把关直接改写检索池/线上行为
+- **前端**:FeedbackWidget 步骤级组件(👍 直接提交/👎 评论必填→就地展示分诊类别徽标+「已沉淀:去向」+sink_ref,可再反馈),StepTimeline 接线 listing/support 两个已完成步骤;BadCasePanel 新增「待审候选知识」(通过入库/驳回删除)与「反馈分诊记录」(verdict/类别/沉淀去向三徽标+归因+分诊来源+点击回溯工作流)两区
+- **真机端到端验证(真 PG+真 LLM+浏览器)**:详情页客服步骤提交「知识库里查不到水枪玩具的CE认证要求,缺少这条安全合规文档」→ 分诊 category=kb_gap(source=llm,rule_hits=[查不到,缺少])→ LLM 起草候选「水枪玩具的CE认证要求是什么?」(FB-ABF0995E)→ 面板通过入库 → hybrid 检索「水枪玩具需要什么安全认证 CE」该条以 0.821 相似度居 top1(种子 FAQ 仅 0.34)——反馈飞轮真实闭合
+- **踩坑**:端口 8000 残留旧进程(无 M10 路由)导致前端提交 404 静默失败,widget 在 open 态不展示 error 的 UX 缺陷顺带记录;`draft_candidate_knowledge` 曾把 `return fallback` 排在 fallback 定义前(UnboundLocalError,pyflakes 不报局部先引用,靠真机跑通暴露)
+- **验收**:pytest 138 绿(M10 新增 18:分诊单测 10+反馈闭环集成 8,含候选审批门/正式语料不可审/黄金集写入/badcase 隔离/租户隔离/API roundtrip);ruff 干净;tsc+vite 构建通过;红队+RAG 双门禁不受影响
+
 ## 后续里程碑速查
 
-v1.4 全里程碑 M0-M8 ✅ 收官。可选后续：语义缓存 Phase 2（同 ResultCache 接口换 embedding 相似度 + semantic_cache_entries 迁移）、真实出图接缝、更多红队 seed。
+v1.4 全里程碑 M0-M9 ✅ + M10 反馈闭环 ✅。可选后续：语义缓存 Phase 2（同 ResultCache 接口换 embedding 相似度 + semantic_cache_entries 迁移）、真实出图接缝、更多红队 seed。
 
 ## 验证命令
 
 ```bash
 bash backend/scripts/dev_postgres.sh          # 起 PG(15433)
 cd backend && .venv/Scripts/python -m ruff check src tests scripts evals
-.venv/Scripts/python -m pytest                # 77 个测试(RUN_LLM_SMOKE=1 追加真网冒烟)
+.venv/Scripts/python -m pytest                # 138 个测试(RUN_LLM_SMOKE=1 追加真网冒烟)
 .venv/Scripts/python evals/run_evals.py       # 红队门禁:3 条 seed 全 PASS 才放行
 .venv/Scripts/python evals/rag_evals.py --gate    # RAG 质量门禁:31 条黄金查询 + 忠实度护栏
+.venv/Scripts/python evals/rag_evals.py --feedback-report   # 复核反馈沉淀的候选黄金查询(M10)
 .venv/Scripts/python scripts/warm_demo_cache.py   # 预热 Demo 兜底缓存(需真 key,一次性)
 bash scripts/reset_and_replay.sh              # 一键重置+种子+重放全链路(仓库根,cwd 任意)
 docker compose up --build                     # 一键起全栈(前端 :8088)
