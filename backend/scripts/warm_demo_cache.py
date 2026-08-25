@@ -87,7 +87,9 @@ async def main() -> int:
         "下一步：把 .env 改成 SILICONFLOW_API_KEY=（留空）+ DEMO_CACHE_MODE=read，\n"
         "即可在无网/零 token 环境重放同样的 LLM 产出。"
     )
-    return 0 if all(f.status == "completed" for f in finals) else 2
+    # blocked/cancelled 也是合法预热终态（go/no-go 闸门拦下的选题同样预热了前段链路）；
+    # 只有非终态（超时未跑完）才算失败
+    return 0 if all(f.status in ("completed", "blocked", "cancelled") for f in finals) else 2
 
 
 if __name__ == "__main__":

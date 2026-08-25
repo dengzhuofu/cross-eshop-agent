@@ -1,5 +1,7 @@
 # Cross Eshop Agent —— 跨境电商全链路 Agent 平台
 
+[![CI](https://github.com/dengzhuofu/cross-eshop-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/dengzhuofu/cross-eshop-agent/actions/workflows/ci.yml)
+
 面向中小跨境卖家的多租户 Agent 运营平台：选品研究 → 利润测算 → 供应商评估 → go/no-go 决策闸门 → 多平台 Listing 生成（生成-评审-重写闭环）→ 人工审批 → 模拟发布 → 运营监控 → 客服售后 → 复盘回流。
 
 > 当前进度：**M8 已完成，v1.4 全里程碑收官**。M0 行走骨架 → M1 工具治理层 → M2 LLM 接入（SiliconFlow/DeepSeek-V3.2）→ M3 三角真身（profit/supplier 数据工具化、critic LLM 审查、image brief 工具化）→ M4 长期记忆双线（供应商风险检索降权 / 复盘经验回写，租户隔离）+ 上下文压缩接缝 + token 硬熔断 → M5 真实人工审批（LangGraph interrupt/resume + SqliteSaver 检查点 + 审批中心前端）→ M6 客服 RAG（五类知识集合 + search_knowledge/get_order_status 治理工具 + 融合铁律：草稿时效与工具冲突即弃稿回退）→ M7 BadCase 红队（detector 注册表 + planner 输入脱敏 / Listing 扫描 / 记忆回写拦截三道防线 + 3 条红队 seed 的 eval CI 门禁）→ M8 打磨（主链路自用 RAG：planner/listing 主动检索 ops_playbook 运营知识库 + Demo 兜底缓存 ResultCache + docker-compose 一键起 + Bad Case 前端面板 + 一键 reset & replay）。核心设计：**LLM 只提议，代码做硬保证**——评分封顶、平台规则整形、绝对化措辞生成端改写（CLAIM_HEDGE_MAP）、critic 分级拦截（high 阻塞重写 / medium 仅记录）、决策 rubric 优先级、RAG 与工具冲突以工具为准，全由确定性代码兜底；无 key 自动降级 stub/hash 引擎，测试 CI 零出网。
@@ -75,6 +77,31 @@ npm run dev        # http://localhost:5173（vite 代理 /api → 127.0.0.1:8000
 ![Bad Case 面板](docs/screenshots/badcase-panel.png)
 
 ## 架构速览
+
+### 图拓扑（与 `agent.py` 定义一一对应）
+
+```mermaid
+flowchart LR
+    START((START)) --> planner[planner<br/>选题脱敏+RAG检索]
+    planner --> research[research<br/>证据评分·可深化]
+    research --"证据<0.7 且 轮数<2"--> research
+    research --证据充分--> profit[profit<br/>利润测算]
+    profit --> supplier[supplier<br/>供应商评估·记忆降权]
+    supplier --> gate{decision_gate<br/>go/no-go}
+    gate --abort--> halted[halted<br/>取消/阻断]
+    gate --proceed--> listing[listing<br/>RAG守则+规则整形]
+    listing --> critic{critic<br/>分级拦截}
+    critic --"high违规 且 轮数<3"--> listing
+    critic --通过--> approval_check{approval_check<br/>HITL interrupt}
+    approval_check --驳回/abort--> halted
+    approval_check --通过--> publish[publish<br/>幂等发布]
+    publish --> ops[ops<br/>运营建议] --> support[support<br/>RAG融合铁律] --> retrospective[retrospective<br/>记忆回写·投毒拦截] --> END((END))
+    halted --> END
+```
+
+三个循环都带硬上限护栏（研究深化 ≤2、Critic 重写 ≤3，PRD §14.3）；`approval_check` 是 LangGraph `interrupt()` 断点，人工审批后 `Command(resume)` 续跑。
+
+### 目录结构
 
 ```
 backend/src/app/

@@ -151,7 +151,26 @@ export interface BadCase {
   evidence: unknown;
   /** detected / quarantined / resolved / escalated / aborted */
   status: string;
+  /** 处置留痕(PRD §20.4):流转到终态时由处置请求写入的 note */
+  outcome?: string | null;
   created_at: string;
+}
+
+/** POST /api/v1/badcases/{id}/status 允许的目标状态:仅终态(PRD §20.4) */
+export type BadCaseTerminalStatus = 'resolved' | 'escalated' | 'aborted';
+
+/** POST /api/v1/badcases/{id}/status 载荷 */
+export interface BadCaseStatusPayload {
+  status: BadCaseTerminalStatus;
+  /** 处置说明,后端写入 outcome 字段作留痕 */
+  note?: string;
+}
+
+/** POST /api/v1/badcases/{id}/status 响应 */
+export interface BadCaseStatusResult {
+  id: string;
+  status: string;
+  outcome: string | null;
 }
 
 /**

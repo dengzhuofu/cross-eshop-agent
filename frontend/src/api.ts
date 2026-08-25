@@ -8,6 +8,8 @@ import type {
   ApprovalRequestPayload,
   ApprovalResult,
   BadCase,
+  BadCaseStatusPayload,
+  BadCaseStatusResult,
 } from './types';
 
 /** GET /api/v1/badcases 的查询参数(全部可选) */
@@ -125,5 +127,16 @@ export class ApiClient {
     if (params?.category) qs.set('category', params.category);
     const query = qs.toString();
     return this.request<{ items: BadCase[] }>(`/api/v1/badcases${query ? `?${query}` : ''}`);
+  }
+
+  /**
+   * POST /api/v1/badcases/{id}/status — 坏例处置闭环(PRD §20.4):流转到终态。
+   * 跨租户/不存在的记录返回 404;非法目标状态由后端 Literal 校验拒绝(422)。
+   */
+  updateBadCaseStatus(id: string, payload: BadCaseStatusPayload): Promise<BadCaseStatusResult> {
+    return this.request<BadCaseStatusResult>(`/api/v1/badcases/${id}/status`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
   }
 }

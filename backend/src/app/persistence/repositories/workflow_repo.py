@@ -9,7 +9,7 @@ import math
 import uuid
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.persistence.db import session_factory
 from app.persistence.models import (
@@ -445,3 +445,34 @@ class WorkflowRepository:
             }
             for r in rows
         ]
+
+    async def update_bad_case_status(
+        self,
+        tenant_id: str,
+        bad_case_id: str,
+        status: str,
+        outcome_note: str | None = None,
+    ) -> bool:
+        """Bad Case 状态流转（PRD §20.4）：detected → quarantined → 终态处置。
+
+        允许的目标状态仅 resolved/escalated/aborted（detected/quarantined 只由
+        检测链路写入，不允许人工回流）。UPDATE 带 tenant_id 过滤——租户隔离在
+        SQL 层完成，跨租户/不存在的记录一律返回 False（上层转 404 防枚举）。
+        outcome 为文本列：note 非空时原样写入作处置留痕，空 note 不改动既有值。
+        """
+        if status not in {"resolved", "escalated", "aborted"}:
+            return False
+        values: dict[str, Any] = {"status": status}
+        if outcome_note:
+            values["outcome"] = outcome_note
+        async with self._factory() as s:
+            res = await s.execute(
+                update(BadCaseRecord)
+                .where(
+                    BadCaseRecord.id == bad_case_id,
+                    BadCaseRecord.tenant_id == tenant_id,
+                )
+                .values(**values)
+            )
+            await s.commit()
+            return bool(res.rowcount)

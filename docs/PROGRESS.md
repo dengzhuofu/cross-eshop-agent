@@ -123,6 +123,9 @@
 - **Demo 兜底缓存(v1.4 §1.2 接缝)**:`cache/result_cache.py` 定义 `ResultCache` Protocol + MVP 精确 hash 文件实现(原子写,Phase 2 同接口换 embedding 相似度,semantic_cache_entries 表留后置 migration);`CachedLlmClient` 包裹 LLM 客户端,`demo_cache_mode` 三态 off/read/readwrite——预热:`warm_demo_cache.py`(readwrite+真 key 跑 3 条选题),离线演示:无 key+read 命中即重放真实 LLM 产出(0 token),未命中走节点既有 stub 兜底;`llm_enabled()` 在 read 态放行以敢发起命中
 - **部署**:`backend/Dockerfile`(src 布局安装+迁移/种子随镜像)+`frontend/Dockerfile`(vite build→nginx 反代 /api)+`docker-compose.yml`(PG16+后端自动迁移种子+前端 :8088)+`scripts/reset_and_replay.sh` 一键重置重放(已真库验证);**踩坑修复**:reset_demo.py 的 drop 列表停在 0001 时代,0002-0004 的表会让 upgrade_head 撞表——补全为全链 drop
 - **前端第 5 页 Bad Case 面板**:统计卡(总数/高危/已隔离)+八类筛选 chips(前端过滤)+坏例卡(severity/status/category 徽标+证据折叠 JSON+detector 中文+点击回溯工作流详情);详情页 `bad_case_scan` 步骤特殊渲染(红色警示节点+origin 徽标+patterns/phrases 标签化);**踩坑**:证据折叠按钮嵌在可点击卡内,点击会冒泡触发卡片跳转——CollapsibleJson 的 toggle 加 stopPropagation 修复(浏览器实测验证)
+- **兜底缓存真机验证**：warm 脚本（真 key+readwrite）跑 3 条选题写 18 条缓存（2 条被 go/no-go 正常拦下，blocked 也是合法预热终态）；离线重放（无 key+read）实测：research/decision_gate **0 token 命中缓存**、gate reasoning 与预热运行逐字一致；listing/support 未命中按设计降级 stub。**发现（重要）**：缓存 key 覆盖完整提示词（含 RAG 注入的 knowledge pack），离线侧嵌入引擎降级 hash 与预热侧 bge-m3 检索结果不同 → 提示词不同 → key 不同 → RAG 相关节点必然 miss。结论：全链离线重放要求预热/重放两侧嵌入引擎一致（演示库若用 hash 引擎播种知识即可全链重放）；Phase 2 语义缓存同样只解相似匹配、不解跨引擎检索漂移，该约束记入接缝说明
+- **处置闭环（PRD §20.4 收尾）**：`POST /api/v1/badcases/{id}/status`（resolved/escalated/aborted，Literal 校验 422，repo 层 UPDATE 带 tenant_id 过滤防 IDOR、跨租户 404 防枚举）；面板卡片加「标记已处置/升级处理」按钮（stopPropagation 防冒泡跳转、终态卡隐藏按钮、outcome 处置留痕展示）
+- **CI 生效（v1.4 验收收口）**：.github/workflows/ci.yml 双 job——backend(ruff 含 evals → pytest → 红队门禁 run_evals.py) + frontend(npm ci → tsc+vite build)，README 挂徽章
 - **验收**:pytest 77 绿(+13 缓存单测 +2 主链路 RAG 集成);ruff/tsc 干净;红队门禁 3×PASS;浏览器端到端:面板筛选/跳转/证据展开、详情页扫描块与 knowledge_refs 全部实测通过,截图 4 张入 `docs/screenshots/`
 
 ## 后续里程碑速查

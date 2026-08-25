@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ApiClient } from '../api';
-import type { BadCase } from '../types';
+import type { BadCase, BadCaseTerminalStatus } from '../types';
 import {
   BADCASE_CATEGORY_LABELS,
   BADCASE_STATUS_LABELS,
@@ -24,6 +24,9 @@ const CATEGORY_FILTERS: Array<{ key: string; label: string }> = [
   { key: 'all', label: '全部' },
   ...Object.entries(BADCASE_CATEGORY_LABELS).map(([key, label]) => ({ key, label })),
 ];
+
+/** 终态集合(PRD §20.4):已流转到终态的坏例不再提供操作按钮 */
+const TERMINAL_STATUSES: ReadonlySet<string> = new Set(['resolved', 'escalated', 'aborted']);
 
 /**
  * 顶部统计小卡数据:总数 / 高危(high) / 已隔离(quarantined)。
@@ -55,6 +58,8 @@ export default function BadCasePanel({ client, onOpenDetail }: Props) {
   const [items, setItems] = useState<BadCase[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [category, setCategory] = useState<string>('all');
+  /** 正在提交处置请求的坏例 id(防双击重复提交) */
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -66,6 +71,27 @@ export default function BadCasePanel({ client, onOpenDetail }: Props) {
       setError(e instanceof Error ? e.message : String(e));
     }
   }, [client]);
+
+  /**
+   * 处置闭环(PRD §20.4):把坏例流转到终态并就地刷新列表。
+   * 按钮在卡片 onClick 内部,必须 stopPropagation 防止触发跳转详情。
+   */
+  const handleDispose = useCallback(
+    async (item: BadCase, status: BadCaseTerminalStatus) => {
+      if (busyId) return;
+      setBusyId(item.id);
+      setError(null);
+      try {
+        await client.updateBadCaseStatus(item.id, { status });
+        await load();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [busyId, client, load],
+  );
 
   // 进入页面与租户切换(client 重建)时重新拉取,并重置筛选
   useEffect(() => {
@@ -89,7 +115,7 @@ export default function BadCasePanel({ client, onOpenDetail }: Props) {
         <div>
           <h2 className="page-title">Bad Case 面板</h2>
           <p className="page-desc">
-            坏例防线可观测:输入注入、输出失控、记忆投毒等八类异常由各链路扫描器自动检出并隔离,点击卡片回溯对应工作流现场。
+            坏例防线可观测:输入注入、输出失控、记忆投毒等八类异常由各链路扫描器自动检出并隔离;卡片底部可直接「标记已处置 / 升级处理」完成闭环(PRD §20.4),点击卡片回溯对应工作流现场。
           </p>
         </div>
         <div className="btn-row">
@@ -157,6 +183,7 @@ export default function BadCasePanel({ client, onOpenDetail }: Props) {
         <div className="badcase-list">
           {filtered.map((item) => {
             const clickable = Boolean(item.workflow_id);
+            const terminal = TERMINAL_STATUSES.has(item.status?.toLowerCase() ?? item.status);
             return (
               <article
                 key={item.id}
@@ -187,6 +214,42 @@ export default function BadCasePanel({ client, onOpenDetail }: Props) {
 
                 <footer className="badcase-foot">
                   <span className="cell-mono cell-faint">detector:{DETECTOR_LABELS[item.detector] ?? item.detector}</span>
+                  {!terminal && (
+                    <span
+                      className="btn-row"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <button
+                        type="button"
+                        className="btn small ghost"
+                        disabled={busyId === item.id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleDispose(item, 'resolved');
+                        }}
+                        title="复核完毕,标记为已处置(resolved)"
+                      >
+                        标记已处置
+                      </button>
+                      <button
+                        type="button"
+                        className="btn small ghost"
+                        disabled={busyId === item.id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleDispose(item, 'escalated');
+                        }}
+                        title="需要人工/上游介入,升级处理(escalated)"
+                      >
+                        升级处理
+                      </button>
+                    </span>
+                  )}
+                  {terminal && item.outcome && (
+                    <span className="cell-mono cell-faint" title={item.outcome}>
+                      处置留痕:{item.outcome}
+                    </span>
+                  )}
                   {clickable && (
                     <span className="cell-mono cell-faint badcase-wfid" title={item.workflow_id}>
                       工作流 {item.workflow_id} →

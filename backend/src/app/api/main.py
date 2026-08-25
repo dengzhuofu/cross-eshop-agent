@@ -345,3 +345,35 @@ async def list_badcases(
         tenant_id=tenant.tenant_id, workflow_id=workflow_id, category=category, limit=limit
     )
     return {"items": items}
+
+
+class BadCaseStatusBody(BaseModel):
+    """Bad Case 处置请求（PRD §20.4）：目标状态仅限终态。
+
+    detected/quarantined 由检测链路写入，人工只能流转到 resolved/escalated/aborted；
+    Literal 之外的取值由 pydantic 校验自然产生 422。
+    """
+
+    status: Literal["resolved", "escalated", "aborted"]
+    note: str = Field(default="", max_length=500)
+
+
+@app.post("/api/v1/badcases/{bad_case_id}/status")
+async def update_badcase_status(
+    bad_case_id: str, body: BadCaseStatusBody, tenant: TenantContext = Depends(tenant_dep)
+) -> dict:
+    """Bad Case 处置闭环（PRD §20.4）：quarantined → retry/reroute/escalate/abort → resolved。
+
+    租户不存在由 tenant_dep 统一 404；跨租户/不存在的记录在 SQL 层过滤后同样
+    404（IDOR 策略，防枚举）；note 写入 outcome 文本列作处置留痕。
+    """
+    repo = WorkflowRepository()
+    ok = await repo.update_bad_case_status(
+        tenant_id=tenant.tenant_id,
+        bad_case_id=bad_case_id,
+        status=body.status,
+        outcome_note=body.note or None,
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="not found")
+    return {"id": bad_case_id, "status": body.status, "outcome": body.note or None}
