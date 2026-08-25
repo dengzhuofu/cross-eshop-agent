@@ -17,6 +17,8 @@ os.environ["MAX_RESEARCH_ROUNDS"] = "2"
 os.environ["MAX_CRITIQUE_ROUNDS"] = "3"
 # 测试永远跑确定性 stub 路径：即使 backend/.env 配了真 key 也不许出网
 os.environ["SILICONFLOW_API_KEY"] = ""
+# M12 桥接同样封闭：测试不发 HTTP 到 mock 商城（单测里显式 monkeypatch 打开）
+os.environ["MOCK_MARKETPLACE_URL"] = ""
 
 import pytest  # noqa: E402
 

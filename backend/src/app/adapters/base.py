@@ -32,6 +32,8 @@ class PublishResult(BaseModel):
     marketplace: str
     listing_id: str
     status: str = "published"
+    # M12：mock 商城商品页 URL（商城不可达/禁用时为空串，契约向后兼容）
+    url: str = ""
 
 
 def validate_against_rules(listing: dict, rules: MarketplaceRules) -> list[str]:

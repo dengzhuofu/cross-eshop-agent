@@ -41,3 +41,4 @@ class PublishListingOutput(BaseModel):
     listing_id: str = ""
     status: str = "published"  # published | validation_failed
     validation_errors: list[str] = []
+    url: str = ""  # M12：mock 商城商品页 URL（未桥接/失败时为空）

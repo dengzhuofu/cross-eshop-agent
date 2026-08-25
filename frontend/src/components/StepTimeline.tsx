@@ -5,6 +5,7 @@ import StatusBadge from './StatusBadge';
 import CollapsibleJson from './CollapsibleJson';
 import BadCaseScanBlock from './BadCaseScanBlock';
 import FeedbackWidget from './FeedbackWidget';
+import PublishBlock from './PublishBlock';
 
 /** 可反馈的节点 → 反馈 target_type 映射(M10 闭环入口) */
 const FEEDBACK_TARGETS: Record<string, 'support_draft' | 'listing_copy'> = {
@@ -63,6 +64,7 @@ export default function StepTimeline({ steps, loading, client, workflowId }: Pro
                     </>
                   ) : (
                     <>
+                      {step.node === 'publish' && <PublishBlock detail={step.detail} />}
                       <CollapsibleJson data={step.detail} />
                       {target && step.status === 'completed' && (
                         <FeedbackWidget

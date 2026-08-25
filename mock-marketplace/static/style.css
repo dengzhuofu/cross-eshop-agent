@@ -1,0 +1,118 @@
+/* shopverse — mock marketplace（视觉基调对齐 Amazon：深色导航/橙色按钮/白卡片） */
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: "Segoe UI", Arial, "Helvetica Neue", sans-serif;
+  background: #eaeded;
+  color: #0f1111;
+}
+a { color: #007185; text-decoration: none; }
+a:hover { color: #c7511f; text-decoration: underline; }
+code { background: #f0f2f2; padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+
+.nav {
+  display: flex; align-items: center; gap: 18px;
+  background: #131921; padding: 10px 22px;
+}
+.logo { color: #fff; font-size: 22px; font-weight: 800; letter-spacing: 0.5px; }
+.logo:hover { color: #fff; text-decoration: none; }
+.logo-dot { color: #ff9900; }
+.search { flex: 1; display: flex; }
+.search input {
+  flex: 1; padding: 9px 12px; border: none; border-radius: 5px 0 0 5px;
+  font-size: 15px; outline: none;
+}
+.search button {
+  border: none; background: #febd69; padding: 9px 16px;
+  border-radius: 0 5px 5px 0; cursor: pointer; font-size: 15px;
+}
+.seller-link { color: #fff; font-weight: 600; font-size: 14px; }
+.seller-link:hover { color: #febd69; text-decoration: none; }
+
+.subnav { display: flex; gap: 4px; background: #232f3e; padding: 7px 22px; }
+.tab { color: #e7e7e7; font-size: 13.5px; padding: 4px 10px; border-radius: 3px; }
+.tab:hover { color: #fff; text-decoration: none; background: #37475a; }
+.tab.on { color: #febd69; font-weight: 700; }
+
+.wrap { max-width: 1280px; margin: 0 auto; padding: 18px 22px 60px; }
+.h { font-size: 21px; margin: 8px 0 16px; }
+.muted { color: #565959; }
+.small { font-size: 12.5px; }
+.empty { background: #fff; border: 1px dashed #cfd5d6; border-radius: 8px;
+  padding: 34px; text-align: center; color: #565959; grid-column: 1 / -1; }
+
+.grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 16px;
+}
+.card {
+  background: #fff; border-radius: 8px; overflow: hidden; display: flex;
+  flex-direction: column; border: 1px solid #e3e6e6; color: inherit;
+}
+.card:hover { text-decoration: none; box-shadow: 0 3px 12px rgba(15, 17, 17, 0.15); }
+.card-img { background: #f7f7f7; text-align: center; }
+.card-img img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; }
+.card-body { padding: 12px 14px 16px; display: flex; flex-direction: column; gap: 6px; }
+.card-title {
+  font-size: 14.5px; line-height: 1.35; min-height: 3.9em;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.price { color: #b12704; font-size: 20px; font-weight: 700; }
+.price.big { font-size: 28px; }
+.stars { color: #de7921; font-size: 13.5px; }
+.star-ico { color: #ffa41c; letter-spacing: 1px; font-weight: 400; }
+
+.badge {
+  color: #fff; font-size: 11px; font-weight: 700; padding: 2.5px 8px;
+  border-radius: 3px; align-self: flex-start; letter-spacing: 0.4px;
+}
+.kw {
+  display: inline-block; background: #f0f2f2; color: #565959; font-size: 11.5px;
+  border-radius: 10px; padding: 2px 9px; margin: 3px 4px 0 0;
+}
+.pill {
+  background: #e8f5e9; color: #1e7b34; font-size: 12px; font-weight: 700;
+  padding: 2.5px 9px; border-radius: 10px;
+}
+
+/* 商品详情页（PDP）：图 | 信息 | 买盒 三栏 */
+.pdp-grid { display: grid; grid-template-columns: 380px 1fr 280px; gap: 26px; background: #fff;
+  border-radius: 8px; padding: 24px; border: 1px solid #e3e6e6; }
+.pdp-img img { width: 100%; border-radius: 8px; border: 1px solid #e3e6e6; }
+.pdp-info h1 { font-size: 22px; line-height: 1.3; margin: 6px 0 10px; }
+.pdp-info h2 { font-size: 17px; margin: 20px 0 8px; }
+.crumbs { margin: 0 0 10px 4px; }
+.stock { color: #007600; font-size: 15px; font-weight: 600; margin: 8px 0; }
+.claim { color: #565959; font-style: italic; margin: 10px 0 4px; }
+.bullets { margin: 0; padding-left: 20px; }
+.bullet { margin: 7px 0; font-size: 14.5px; line-height: 1.45; }
+.buybox {
+  border: 1px solid #d5d9d9; border-radius: 8px; padding: 16px;
+  display: flex; flex-direction: column; gap: 8px; height: fit-content;
+}
+.btn {
+  background: #ffa41c; border: 1px solid #f08804; color: #0f1111;
+  border-radius: 20px; padding: 9px 0; font-size: 14px; font-weight: 700;
+  cursor: pointer; margin-top: 4px;
+}
+.btn.alt { background: #ffa41c33; }
+.btn:disabled { cursor: not-allowed; opacity: 0.85; }
+.desc { background: #fff; border: 1px solid #e3e6e6; border-radius: 8px;
+  padding: 20px 24px; margin-top: 18px; }
+.desc p { line-height: 1.6; color: #0f1111; }
+
+/* Seller Central 表格 */
+.tbl { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px;
+  overflow: hidden; border: 1px solid #e3e6e6; }
+.tbl th { background: #232f3e; color: #fff; text-align: left; font-size: 13px;
+  padding: 10px 12px; }
+.tbl td { padding: 10px 12px; border-top: 1px solid #eef0f0; font-size: 13.5px;
+  vertical-align: top; }
+
+.footer { text-align: center; color: #565959; font-size: 12.5px; padding: 26px 0 34px; }
+.footer a { color: #007185; }
+
+@media (max-width: 980px) {
+  .pdp-grid { grid-template-columns: 1fr; }
+}

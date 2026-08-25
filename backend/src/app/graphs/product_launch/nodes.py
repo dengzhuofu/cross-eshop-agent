@@ -1163,7 +1163,8 @@ async def node_publish(state: Dict[str, Any], config: RunnableConfig) -> Dict[st
         payload = {
             "marketplace": mp,
             "workflow_id": wf_id,
-            "listing": d,
+            # workflow_id 并入 listing：mock 商城 Seller Central 可回溯来源工作流（M12）
+            "listing": {**d, "workflow_id": wf_id},
             "idempotency_key": idem_key,
         }
         try:
@@ -1190,12 +1191,19 @@ async def node_publish(state: Dict[str, Any], config: RunnableConfig) -> Dict[st
                 "listing_id": o.get("listing_id", ""),
                 "status": o.get("status", "error"),
                 "validation_errors": o.get("validation_errors", []),
+                "url": o.get("url", ""),
                 "idempotency_key": idem_key,
                 "replayed": res.replayed,
             }
         )
     await rec.status(WorkflowStatus.executing.value)
-    detail = {"published": ok_count, "replayed": replay_count, "total": len(published)}
+    detail = {
+        "published": ok_count,
+        "replayed": replay_count,
+        "total": len(published),
+        # 逐平台明细（M12）：含 mock 商城商品页 url，前端据此渲染「在商城查看」
+        "items": published,
+    }
     await rec.step(
         "publish", detail=detail, latency_ms=int((time.perf_counter() - t0) * 1000)
     )

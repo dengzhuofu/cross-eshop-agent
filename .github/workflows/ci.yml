@@ -58,3 +58,23 @@ jobs:
       # tsc 类型检查 + vite 构建（零组件库深色面板）
       - name: Build
         run: npm run build
+
+  # M12：mock 商城（shopverse）独立服务——lint + TestClient 全链路测试
+  marketplace:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install fastapi uvicorn httpx pytest ruff
+
+      - name: Lint
+        run: ruff check mock-marketplace
+
+      - name: Tests
+        run: pytest mock-marketplace -q

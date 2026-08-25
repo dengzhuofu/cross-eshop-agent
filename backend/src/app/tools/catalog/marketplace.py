@@ -47,6 +47,7 @@ async def _publish_listing(inp: PublishListingInput, ctx: ToolContext) -> dict:
         "listing_id": result.listing_id,
         "status": result.status,
         "validation_errors": [],
+        "url": result.url,
     }
 
 

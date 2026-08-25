@@ -1480,3 +1480,64 @@ body {
 .fb-section {
   margin-top: 20px;
 }
+
+/* ---- M12:publish 步骤的逐平台发布结果(含 mock 商城外链) ---- */
+.publish-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0 4px;
+}
+.publish-item {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12.5px;
+  background: var(--bg-elev, #1c2230);
+  border: 1px solid var(--border, #2a3247);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+.pub-mp {
+  font-weight: 700;
+  color: var(--text, #e6e9f2);
+}
+.pub-status {
+  font-size: 11.5px;
+  padding: 1.5px 8px;
+  border-radius: 9px;
+  font-weight: 600;
+}
+.pub-status.tone-ok {
+  background: rgba(46, 160, 67, 0.18);
+  color: #3fb950;
+}
+.pub-status.tone-bad {
+  background: rgba(248, 81, 73, 0.16);
+  color: #f85149;
+}
+.pub-status.tone-warn {
+  background: rgba(210, 153, 34, 0.18);
+  color: #d29922;
+}
+.pub-replay {
+  font-size: 11px;
+  color: #8b949e;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 1px 7px;
+}
+.pub-id {
+  font-family: var(--mono, 'Cascadia Code', Consolas, monospace);
+  font-size: 11.5px;
+  color: #8b949e;
+}
+.pub-link {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.pub-err {
+  color: #f85149;
+  font-size: 11.5px;
+}

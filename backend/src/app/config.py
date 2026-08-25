@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     demo_cache_path: str = ".localdata/demo_cache.json"
     # M10：检索未命中类反馈沉淀的黄金查询候选集（JSONL，人工复核后转正进 rag_golden）
     feedback_golden_path: str = ".localdata/feedback_golden.jsonl"
+    # M12：mock 商城（shopverse）地址——publish_listing 适配器把上架物 POST 过去
+    # 让铺货效果看得见。置空禁用（测试/CI 由 conftest 强制置空，零出网）；
+    # 商城不在线时推送静默失败，绝不阻塞发布主链路。
+    mock_marketplace_url: str = "http://127.0.0.1:8001"
 
 
 @lru_cache

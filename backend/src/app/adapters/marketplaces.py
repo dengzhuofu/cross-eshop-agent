@@ -2,9 +2,14 @@
 
 差异点体现真实工程复杂度：字段约束、声明黑名单、佣金模型、图片规范各不相同。
 发布幂等在 adapter 内部再做一层 memo（executor 层的 ToolCall 重放是第一道）。
+M12 起发布成功后会把上架物推送到 mock 商城（shopverse），铺货效果看得见；
+商城只是演示出口——不可达/禁用一律静默降级，绝不阻塞发布主链路。
 """
 
+import logging
 import secrets
+
+import httpx
 
 from app.adapters.base import (
     ImageSpec,
@@ -12,6 +17,17 @@ from app.adapters.base import (
     PublishResult,
     validate_against_rules,
 )
+from app.config import get_settings
+
+logger = logging.getLogger(__name__)
+
+
+async def _storefront_post(url: str, payload: dict) -> dict:
+    """桥接 HTTP 单点：测试 monkeypatch 本函数即可，不必伪造 httpx 客户端。"""
+    async with httpx.AsyncClient(timeout=2.0) as client:
+        resp = await client.post(url, json=payload)
+        resp.raise_for_status()
+        return resp.json()
 
 
 class _MockAdapterBase:
@@ -37,7 +53,33 @@ class _MockAdapterBase:
             status="published",
         )
         self._memo[idempotency_key] = result
+        await self._notify_storefront(listing, result)
         return result
+
+    async def _notify_storefront(self, listing: dict, result: PublishResult) -> None:
+        """M12：上架物 POST 到 mock 商城（幂等 upsert），成功则回填商品页 URL。
+        未配置（空串）/商城不在线/超时 → 静默跳过，url 保持空串。"""
+        base = get_settings().mock_marketplace_url
+        if not base:
+            return
+        payload = {
+            "listing_id": result.listing_id,
+            "marketplace": self.name,
+            "title": str(listing.get("title") or ""),
+            "brand": str(listing.get("brand") or ""),
+            "bullets": [str(b) for b in (listing.get("bullets") or [])],
+            "claim": str(listing.get("claim") or ""),
+            "description": str(listing.get("description") or ""),
+            "keywords": [str(k) for k in (listing.get("keywords") or [])],
+            "price_usd": listing.get("price_usd"),
+            "sku": str(listing.get("sku") or ""),
+            "workflow_id": str(listing.get("workflow_id") or ""),
+        }
+        try:
+            data = await _storefront_post(f"{base.rstrip('/')}/api/v1/listings", payload)
+            result.url = str((data or {}).get("url") or "")
+        except Exception:  # noqa: BLE001 —— 演示出口的任何故障都不影响发布主链路
+            logger.warning("mock marketplace unreachable (%s); skip storefront sync", base)
 
     async def get_orders(self, filters: dict | None = None) -> list[dict]:
         # M6 接缝：客服/运营的真实订单查询走这里；当前返回确定性演示数据

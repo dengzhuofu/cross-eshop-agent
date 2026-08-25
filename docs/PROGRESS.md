@@ -158,16 +158,27 @@
 - **踩坑**:`normalize_proposal` 首版把提议来源写进 `source` 键而 plan 结构用 `strategy_source`——LLM 提议实际生效(trace 策略=hyde)但来源标记永远是 rule,纯靠新增集成测试断言 strategy_source==llm 才暴露(实现与测试同天写时,断言键名对不上实现键名的错位最容易漏);另:测试里让查询向量=B 文档自身向量会造成双满分平序,alt 向量测试要用第三方向量才能钉死 max 语义
 - **验收**:pytest 152 绿(M11 新增 14:策略单测 9+循环集成 5,含阶梯一致性/规则边界/提议校验/离线降级/hyde 工具参数与换角度重生成/direct 提议升级/越界弃用/alt 向量 max 余弦);ruff 干净
 
+## ✅ M12 Mock 商城可视化:铺货效果看得见(已完成,163 测试绿,真机端到端验证)
+
+- **动机**:没有真实亚马逊/Shopify/TikTok Shop 的 API 与店铺资质,发布步骤只能产出 listing_id 却「看不见货」。M12 在本地 8001 端口扮演一个最小但像样的电商站 shopverse,发布成功后商品真的出现在货架上
+- **商城(`mock-marketplace/`)**:FastAPI+stdlib sqlite3+f-string 模板,**零新依赖零外网**(backend venv 直接跑);三页——storefront(商品网格+搜索+Amazon/Shopify/TikTok Shop 平台 tab)、Amazon 式三栏商品详情页(主图/五点描述+claim/Buy Box)、Seller Central(上架清单:ID/平台徽标/价格/状态/来源工作流);占位主图是确定性 SVG(标题 hash→渐变+首字母);`--demo` 种 3 条演示商品
+- **桥接(发布主链路零改动)**:`_MockAdapterBase.publish_listing` 成功后把上架物按 listing_id **幂等 upsert** POST 到 `MOCK_MARKETPLACE_URL`(默认 127.0.0.1:8001,置空禁用;conftest 强制置空保测试封闭)——HTTP 收口在 `_storefront_post` 单点;**商城不可达/超时静默降级**,PublishResult.url 保持空串,发布永不因演示出口故障而失败;workflow_id 由 node_publish 并入 listing,Seller Central 可回溯来源工作流
+- **URL 全链路回写**:PublishResult 新增 url(向后兼容默认空串)→ PublishListingOutput → publish 步骤 detail 新增 items 逐平台明细 → 前端新组件 PublishBlock 逐平台渲染状态徽标+「在商城查看 ↗」外链(url 为空不渲染死链)
+- **部署与 CI**:docker-compose 新增 marketplace 服务(backend 注入 `MOCK_MARKETPLACE_URL: http://marketplace:8001`);CI 新增 marketplace job(ruff + TestClient 进程内全链路 6 测试,不占端口)
+- **真机端到端**:起 `python mock-marketplace/server.py --demo` → 三平台适配器真实 HTTP 发布 → storefront 出现 6 条商品(3 demo+3 E2E),Seller Central 全部 live 且 workflow 列=wf_e2e_m12,商品详情页五点描述/Buy Box 完整;浏览器截图验证视觉贴近 Amazon(深色导航/橙色按钮/白卡片)
+- **验收**:backend pytest 157 绿(+5 桥接单测:推送成功回填 url/不可达降级/禁用跳过/HTTP 单点契约/PublishResult 兼容)+ mock-marketplace 6 测试绿;ruff 两处干净;前端 tsc+vite 构建通过
+
 ## 后续里程碑速查
 
-v1.4 全里程碑 M0-M9 ✅ + M10 反馈闭环 ✅ + M11 策略自适应检索 ✅。可选后续：语义缓存 Phase 2（同 ResultCache 接口换 embedding 相似度 + semantic_cache_entries 迁移）、真实出图接缝、更多红队 seed。
+v1.4 全里程碑 M0-M9 ✅ + M10 反馈闭环 ✅ + M11 策略自适应检索 ✅ + M12 Mock 商城 ✅。可选后续：语义缓存 Phase 2（同 ResultCache 接口换 embedding 相似度 + semantic_cache_entries 迁移）、真实出图接缝、更多红队 seed。
 
 ## 验证命令
 
 ```bash
 bash backend/scripts/dev_postgres.sh          # 起 PG(15433)
 cd backend && .venv/Scripts/python -m ruff check src tests scripts evals
-.venv/Scripts/python -m pytest                # 152 个测试(RUN_LLM_SMOKE=1 追加真网冒烟)
+.venv/Scripts/python -m pytest                # 157 个测试(RUN_LLM_SMOKE=1 追加真网冒烟)
+python mock-marketplace/server.py --demo      # M12 mock 商城(localhost:8001,--demo 种演示商品)
 .venv/Scripts/python evals/run_evals.py       # 红队门禁:3 条 seed 全 PASS 才放行
 .venv/Scripts/python evals/rag_evals.py --gate    # RAG 质量门禁:31 条黄金查询 + 忠实度护栏
 .venv/Scripts/python evals/rag_evals.py --feedback-report   # 复核反馈沉淀的候选黄金查询(M10)

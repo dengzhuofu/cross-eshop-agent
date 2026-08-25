@@ -27,12 +27,20 @@ services:
       # 如需真 LLM 产出，在 backend/.env 配好后用 `docker compose run` 自行注入，
       # 或启用 Demo 兜底缓存（DEMO_CACHE_MODE=read + 预热过的缓存文件挂载进容器）。
       SILICONFLOW_API_KEY: ""
+      # M12：发布后把上架物推到 mock 商城可视化（compose 网内服务名）
+      MOCK_MARKETPLACE_URL: http://marketplace:8001
     depends_on:
       db:
         condition: service_healthy
     command: sh -c "alembic upgrade head && python scripts/seed_mock_data.py && python scripts/seed_knowledge.py && uvicorn app.api.main:app --host 0.0.0.0 --port 8000"
     ports:
       - "8000:8000"
+
+  # M12 mock 商城：铺货效果可视化（storefront :8001 / Seller Central :8001/seller）
+  marketplace:
+    build: ./mock-marketplace
+    ports:
+      - "8001:8001"
 
   frontend:
     build: ./frontend
