@@ -74,7 +74,13 @@ export default function App() {
         {view.kind === 'list' ? (
           <WorkflowList client={client} onOpenDetail={(id) => setView({ kind: 'detail', id })} />
         ) : view.kind === 'detail' ? (
-          <WorkflowDetail key={`${tenantId}:${view.id}`} client={client} workflowId={view.id} onBack={() => setView({ kind: 'list' })} />
+          <WorkflowDetail
+            key={`${tenantId}:${view.id}`}
+            client={client}
+            workflowId={view.id}
+            onBack={() => setView({ kind: 'list' })}
+            onGoApprovals={() => setView({ kind: 'approvals' })}
+          />
         ) : view.kind === 'badcases' ? (
           <BadCasePanel client={client} onOpenDetail={(id) => setView({ kind: 'detail', id })} />
         ) : (

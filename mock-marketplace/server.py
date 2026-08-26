@@ -13,6 +13,7 @@
 
 import argparse
 import json
+import os
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -20,7 +21,7 @@ from pathlib import Path
 
 import uvicorn
 import views
-from fastapi import FastAPI, Query, Response
+from fastapi import FastAPI, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
@@ -163,15 +164,24 @@ class ListingIn(BaseModel):
 # ---- API（供 agent 适配器回写与测试断言）----
 
 
+def _product_url(request: Request, listing_id: str) -> str:
+    """商品页绝对地址：默认按请求的 base_url 推导（本地 dev 即 http://127.0.0.1:8001）。
+    容器部署时后端经服务网别名访问商城，浏览器打不开该别名——用 PUBLIC_BASE_URL 覆盖。"""
+    public = os.environ.get("PUBLIC_BASE_URL", "").strip().rstrip("/")
+    base = public or str(request.base_url).rstrip("/")
+    return f"{base}/product/{listing_id}"
+
+
 @app.post("/api/v1/listings")
-def api_ingest(listing: ListingIn) -> JSONResponse:
+def api_ingest(listing: ListingIn, request: Request) -> JSONResponse:
     created = upsert_listing(listing.model_dump())
     return JSONResponse(
         {
             "listing_id": listing.listing_id,
             "marketplace": listing.marketplace,
             "status": listing.status,
-            "url": f"/product/{listing.listing_id}",
+            # 绝对地址：前端「在商城查看」外链直接可点（相对路径会落到前端自己的域名上）
+            "url": _product_url(request, listing.listing_id),
             "duplicated": not created,
         }
     )

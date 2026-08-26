@@ -24,6 +24,16 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 /**
+ * 商城外链规范化:商城服务端已改为返回绝对地址;对历史数据里存的相对路径
+ * （/product/xxx，会落到前端自己的域名上）按「商城与前端同主机、端口 8001」
+ * 的部署约定补全，保证旧工作流的外链同样可点。
+ */
+function storefrontHref(url: string): string {
+  if (/^https?:\/\//.test(url)) return url;
+  return `${window.location.protocol}//${window.location.hostname}:8001${url}`;
+}
+
+/**
  * publish 步骤的结构化渲染:逐平台徽标 + 状态 + 「在商城查看」外链(M12)。
  * url 为空 = mock 商城未启动/禁用,只展示状态不渲染死链接。
  */
@@ -48,7 +58,7 @@ export default function PublishBlock({ detail }: { detail: unknown }) {
             {it.replayed && <span className="pub-replay">重放</span>}
             {it.listing_id && <code className="pub-id">{it.listing_id}</code>}
             {it.url && (
-              <a className="pub-link" href={it.url} target="_blank" rel="noreferrer">
+              <a className="pub-link" href={storefrontHref(it.url)} target="_blank" rel="noreferrer">
                 在商城查看 ↗
               </a>
             )}

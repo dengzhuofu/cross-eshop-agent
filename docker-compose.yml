@@ -39,6 +39,10 @@ services:
   # M12 mock 商城：铺货效果可视化（storefront :8001 / Seller Central :8001/seller）
   marketplace:
     build: ./mock-marketplace
+    # PUBLIC_BASE_URL：商品页外链用浏览器可达的地址（容器内后端经服务别名访问，
+    # 若按请求推导会把 http://marketplace:8001/... 写进前端外链，宿主机浏览器打不开）
+    environment:
+      PUBLIC_BASE_URL: http://localhost:8001
     ports:
       - "8001:8001"
 

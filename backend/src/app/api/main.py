@@ -247,6 +247,8 @@ async def get_trace(workflow_id: str, tenant: TenantContext = Depends(tenant_dep
                 "status": s.status,
                 "detail": s.detail,
                 "latency_ms": s.latency_ms,
+                # M13：步骤完成时间——前端据此与决策/工具调用交错成统一活动流
+                "created_at": str(s.created_at),
             }
             for s in steps
         ],
@@ -270,6 +272,11 @@ async def get_trace(workflow_id: str, tenant: TenantContext = Depends(tenant_dep
                 "idempotency_key": c.idempotency_key,
                 "error": c.error,
                 "latency_ms": c.latency_ms,
+                # M13：审计里本就存了输入/输出摘要（executor._summarize），此前没吐给前端——
+                # 对话式活动流的「工具调用卡」靠它展示每次调用传了什么、拿回了什么
+                "input_summary": c.input_summary,
+                "output_summary": c.output_summary,
+                "created_at": str(c.created_at),
             }
             for c in calls
         ],

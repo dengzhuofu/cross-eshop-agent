@@ -69,6 +69,62 @@ export const RISK_LEVEL_LABELS: Record<string, string> = {
   low: '低风险',
 };
 
+/** 治理工具 → 中文（对话式活动流的「工具调用卡」标题） */
+export const TOOL_LABELS: Record<string, string> = {
+  get_marketplace_rules: '平台规则查询',
+  validate_listing: 'Listing 合规校验',
+  publish_listing: '多平台发布',
+  retrieve_memory: '长期记忆检索',
+  record_memory: '经验记忆回写',
+  search_knowledge: '知识库检索',
+  get_order_status: '订单状态查询',
+  estimate_profit: '利润测算',
+  generate_image_brief: '出图简报生成',
+  search_suppliers: '供应商检索',
+  search_market_trends: '市场趋势检索',
+  search_competitor_listings: '竞品 Listing 检索',
+  search_customer_reviews: '客户评论检索',
+};
+
+/** M11 检索策略 → 中文 */
+export const STRATEGY_LABELS: Record<string, string> = {
+  direct: '直检',
+  rewrite: '改写',
+  hyde: 'HyDE',
+};
+
+/** 各类 source 字段（strategy_source / rewrite_source / grade_source）→ 中文 */
+export const SOURCE_LABELS: Record<string, string> = {
+  rule: '规则打底',
+  llm: 'LLM 提议',
+  deterministic: '确定性',
+  'llm+deterministic': 'LLM∩规则双重判级',
+  'as-is': '原句直检',
+};
+
+/** 检索策略 → 徽章色调：direct 青 / rewrite 蓝 / hyde 紫 */
+export function strategyTone(strategy: string | null | undefined): Tone {
+  switch (strategy) {
+    case 'direct':
+      return 'teal';
+    case 'hyde':
+      return 'purple';
+    default:
+      return 'blue';
+  }
+}
+
+export function toolLabel(tool: string | null | undefined): string {
+  if (!tool) return '—';
+  return TOOL_LABELS[tool] ?? tool;
+}
+
+/** unknown（detail 字段常见形态）→ 展示字符串：非字符串一律转写，空值返回空串 */
+export function strLabel(v: unknown): string {
+  if (v == null) return '';
+  return typeof v === 'string' ? v : String(v);
+}
+
 /** 工具调用状态 → 中文(ok 绿 / error 红 / replayed 蓝) */
 export const TOOL_STATUS_LABELS: Record<string, string> = {
   ok: '成功',

@@ -45,13 +45,22 @@ def test_ingest_is_idempotent_upsert(client: TestClient):
     assert r1.status_code == 200
     body = r1.json()
     assert body["listing_id"] == "ama_test0001"
-    assert body["duplicated"] is False and body["url"] == "/product/ama_test0001"
+    # url 是绝对地址（按请求 base_url 推导）——前端「在商城查看」外链直接可点
+    assert body["duplicated"] is False
+    assert body["url"] == "http://testserver/product/ama_test0001"
 
     # 同 id 重放：覆盖而非新增（适配器幂等重放不会造成重复商品）
     r2 = client.post("/api/v1/listings", json={**PAYLOAD, "title": "Updated Title"})
     assert r2.json()["duplicated"] is True
     rows = client.get("/api/v1/listings").json()["listings"]
     assert len(rows) == 1 and rows[0]["title"] == "Updated Title"
+
+
+def test_public_base_url_overrides_product_link(client: TestClient, monkeypatch):
+    """容器部署：后端经服务别名访问商城，浏览器打不开别名——PUBLIC_BASE_URL 覆盖外链域名。"""
+    monkeypatch.setenv("PUBLIC_BASE_URL", "http://localhost:8001")
+    body = client.post("/api/v1/listings", json=PAYLOAD).json()
+    assert body["url"] == "http://localhost:8001/product/ama_test0001"
 
 
 def test_storefront_home_search_and_marketplace_filter(client: TestClient):

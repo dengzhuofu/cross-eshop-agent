@@ -98,6 +98,8 @@ export interface WorkflowStep {
   status: string;
   detail: unknown;
   latency_ms: number | null;
+  /** M13：步骤完成时间——活动流与决策/工具调用交错排序的锚点 */
+  created_at?: string;
 }
 
 /** trace 中的一条 Agent 决策记录(可审计性核心数据) */
@@ -119,6 +121,10 @@ export interface ToolCall {
   idempotency_key: string | null;
   error: string | null;
   latency_ms: number | null;
+  /** M13：executor 七步管线审计里本就存了的输入/输出摘要（大对象截断），工具卡展示用 */
+  input_summary?: unknown;
+  output_summary?: unknown;
+  created_at?: string;
 }
 
 /** GET /api/v1/workflows/{id}/trace */

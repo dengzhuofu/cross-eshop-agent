@@ -4,31 +4,30 @@ import type { TraceResponse, WorkflowDetailData } from '../types';
 import {
   isTerminalStatus,
   MARKETPLACE_LABELS,
-  nodeLabel,
   statusLabel,
   workflowStatusTone,
 } from '../labels';
 import StatusBadge from './StatusBadge';
-import StepTimeline from './StepTimeline';
-import DecisionCards from './DecisionCards';
-import ToolCallTable from './ToolCallTable';
+import AgentStream from './AgentStream';
 
 interface Props {
   client: ApiClient;
   workflowId: string;
   onBack: () => void;
+  /** 待人工审批时活动流里「前往审批中心」的跳转（App 视图切换） */
+  onGoApprovals?: () => void;
 }
 
 const POLL_INTERVAL_MS = 1500;
 
 /**
- * 工作流详情视图(核心展示面)。
+ * 工作流详情视图(核心展示面,M13 起为对话式 agent 过程)。
  *
  * 轮询策略:工作流处于非终态时,每 1.5 秒拉取一次 /trace 与详情;
  * 用 setTimeout 链式调度(而非 setInterval),保证上一次请求返回后才排下一次,
  * 避免慢请求造成堆积;组件卸载或进入终态后自动停止。
  */
-export default function WorkflowDetail({ client, workflowId, onBack }: Props) {
+export default function WorkflowDetail({ client, workflowId, onBack, onGoApprovals }: Props) {
   const [meta, setMeta] = useState<WorkflowDetailData | null>(null);
   const [trace, setTrace] = useState<TraceResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -85,11 +84,6 @@ export default function WorkflowDetail({ client, workflowId, onBack }: Props) {
           </div>
           <div className="detail-badges">
             {status && <StatusBadge label={statusLabel(status)} tone={workflowStatusTone(status)} />}
-            {meta?.current_node && (
-              <span className="node-chip">
-                当前节点:<strong>{nodeLabel(meta.current_node)}</strong>
-              </span>
-            )}
           </div>
         </div>
 
@@ -111,10 +105,12 @@ export default function WorkflowDetail({ client, workflowId, onBack }: Props) {
               </span>
             </div>
 
-            <div className={`poll-indicator${terminal ? ' done' : ''}`}>
-              <span className={polling ? 'pulse-dot' : 'static-dot'} />
-              {terminal ? '运行已结束' : '实时追踪中 · 每 1.5s 自动刷新'}
-            </div>
+            {!terminal && (
+              <div className="poll-indicator">
+                <span className={polling ? 'pulse-dot' : 'static-dot'} />
+                实时追踪中 · 每 1.5s 自动刷新
+              </div>
+            )}
           </>
         )}
 
@@ -124,18 +120,20 @@ export default function WorkflowDetail({ client, workflowId, onBack }: Props) {
         {error && !polling && <div className="banner-error">请求失败:{error}</div>}
       </div>
 
-      {/* ---- 主体:左时间线 / 右决策流,下方审计表 ---- */}
-      <div className="detail-grid">
-        <StepTimeline
-          steps={trace?.steps ?? []}
-          loading={!trace}
-          client={client}
-          workflowId={workflowId}
-        />
-        <DecisionCards decisions={trace?.decisions ?? []} loading={!trace} />
-      </div>
-
-      <ToolCallTable toolCalls={trace?.tool_calls ?? []} />
+      {/* ---- M13：对话式 agent 活动流（步骤/决策/工具调用按时间交错） ---- */}
+      <AgentStream
+        steps={trace?.steps ?? []}
+        decisions={trace?.decisions ?? []}
+        toolCalls={trace?.tool_calls ?? []}
+        loading={!trace}
+        status={status}
+        currentNode={meta?.current_node ?? null}
+        productIdea={meta?.product_idea}
+        marketplaces={meta?.marketplaces}
+        client={client}
+        workflowId={workflowId}
+        onGoApprovals={onGoApprovals}
+      />
     </section>
   );
 }

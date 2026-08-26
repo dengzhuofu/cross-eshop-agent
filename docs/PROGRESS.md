@@ -168,16 +168,25 @@
 - **真机端到端**:起 `python mock-marketplace/server.py --demo` → 三平台适配器真实 HTTP 发布 → storefront 出现 6 条商品(3 demo+3 E2E),Seller Central 全部 live 且 workflow 列=wf_e2e_m12,商品详情页五点描述/Buy Box 完整;浏览器截图验证视觉贴近 Amazon(深色导航/橙色按钮/白卡片)
 - **验收**:backend pytest 157 绿(+5 桥接单测:推送成功回填 url/不可达降级/禁用跳过/HTTP 单点契约/PublishResult 兼容)+ mock-marketplace 6 测试绿;ruff 两处干净;前端 tsc+vite 构建通过
 
+## ✅ M13 Codex 式对话界面：agent 过程全程可视(已完成,166 测试绿,真机端到端验证)
+
+- **动机**：主流 agent 产品（Codex/Claude）的交互范式是「用户提问 → 可查证的思考/工具/子 agent 过程 → 最终答案」，旧详情页是「时间线+决策卡+审计表」三块拼盘，过程语义散在折叠 JSON 里看不懂。M13 把详情页重排成对话式活动流
+- **数据面（小改）**：`/trace` 的 steps 补 `created_at`、tool_calls 补 `input_summary/output_summary/created_at`——审计表里本就存了七步管线的输入/输出摘要，此前没吐给前端；三路留痕（步骤/决策/工具调用）从此都有时间戳，可按发生时间**交错成统一事件流**。新集成测试钉死字段契约
+- **前端 `AgentStream`（Codex 式）**：用户指令气泡（创意+渠道 chips）→ 一整个可折叠「工作过程」区（`⚙ 工作过程 · 18 步骤 · 31 工具调用 · 8 决策 · 197s`；**运行中自动展开**并带 shimmer「正在工作 — 当前节点」，**结束后折叠成一行摘要**）→ 折叠区外的「🏁 最终交付」答案卡（决策结论/铺货结果/复盘要点/审计统计）。过程内三类紧凑行：💭 决策行（推理+结论+备选项可展开）、🔧 工具行（✓/✗/↻ 状态符+高风险红标+耗时，展开看输入/输出摘要）、节点步骤卡（富语义渲染：决策门放行横幅、critic 打回/通过、坏例扫描命中、客服 RAG 面板[路由 chips+策略来源+逐轮召回→相关表格+融合铁律冲突警示+草稿引用]、知识库引用 chips）
+- **联动闭环真机验证**：表单勾「发布前需人工审批」→ 活动流实时看到 研究深化(证据分 0.45→deepen)→决策门放行→Listing 生成→critic 打回重写(1 硬违规)→二轮通过→⏸ 待审批插卡（一键跳审批中心）→ 人工「通过」→ **publish 自动执行 → shopverse 货架 6→9 条**（ama/shp/tts 三商品同步上架）→ 最终交付卡「3/3 平台发布成功」+「在商城查看」外链直达商品页
+- **踩坑**：商城 POST 返回的 `/product/{id}` 相对路径被前端原样渲染成外链——点击落到前端自己的域名 404；修复为服务端按请求 base_url 返回**绝对地址**（`PUBLIC_BASE_URL` 环境变量供容器部署覆盖别名）+ 前端对历史相对路径按「商城与前端同主机 :8001」约定兜底补全。另：IAB 自动化会话后期指针输入整体楔死（读正常/点击截图失效），改用「直接 goto 商品页 URL」验证外链落点
+- **验收**：backend pytest 158 绿（+1 trace 契约集成测试）+ mock-marketplace 7 测试绿（+PUBLIC_BASE_URL 覆盖）；ruff 两处干净；tsc+vite 构建通过；真机全流程（创建→过程可视→审批→自动上架→外链落点）浏览器验证
+
 ## 后续里程碑速查
 
-v1.4 全里程碑 M0-M9 ✅ + M10 反馈闭环 ✅ + M11 策略自适应检索 ✅ + M12 Mock 商城 ✅。可选后续：语义缓存 Phase 2（同 ResultCache 接口换 embedding 相似度 + semantic_cache_entries 迁移）、真实出图接缝、更多红队 seed。
+v1.4 全里程碑 M0-M9 ✅ + M10 反馈闭环 ✅ + M11 策略自适应检索 ✅ + M12 Mock 商城 ✅ + M13 Codex 式对话界面 ✅。可选后续：语义缓存 Phase 2（同 ResultCache 接口换 embedding 相似度 + semantic_cache_entries 迁移）、真实出图接缝、更多红队 seed。
 
 ## 验证命令
 
 ```bash
 bash backend/scripts/dev_postgres.sh          # 起 PG(15433)
 cd backend && .venv/Scripts/python -m ruff check src tests scripts evals
-.venv/Scripts/python -m pytest                # 157 个测试(RUN_LLM_SMOKE=1 追加真网冒烟)
+.venv/Scripts/python -m pytest                # 158 个测试(RUN_LLM_SMOKE=1 追加真网冒烟)
 python mock-marketplace/server.py --demo      # M12 mock 商城(localhost:8001,--demo 种演示商品)
 .venv/Scripts/python evals/run_evals.py       # 红队门禁:3 条 seed 全 PASS 才放行
 .venv/Scripts/python evals/rag_evals.py --gate    # RAG 质量门禁:31 条黄金查询 + 忠实度护栏
