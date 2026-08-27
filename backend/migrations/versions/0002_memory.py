@@ -25,7 +25,7 @@ def upgrade() -> None:
     sa.Column('meta', sa.JSON(), nullable=True),
     sa.Column('source_workflow_id', sa.String(length=32), nullable=True),
     sa.Column(
-        'created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False
+        'created_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
     ),
     sa.ForeignKeyConstraint(['source_workflow_id'], ['workflows.id'], ),
     sa.PrimaryKeyConstraint('id')

@@ -26,7 +26,7 @@ def upgrade() -> None:
     sa.Column('ref', sa.String(length=64), nullable=True),
     sa.Column('meta', sa.JSON(), nullable=True),
     sa.Column(
-        'created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False
+        'created_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
     ),
     sa.PrimaryKeyConstraint('id')
     )

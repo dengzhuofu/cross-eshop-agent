@@ -10,6 +10,10 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite+aiosqlite:///./demo.db"
 
+    # 云端单进程部署：非空且目录存在时由后端直接托管前端构建产物（前端/API 同源免
+    # CORS，公网只需暴露一个端口）；本地开发留空，vite :5173 独立端口不受影响。
+    frontend_dist_path: str = ""
+
     # M0 demo 开关（M5 起支持工作流级 auto_approve=false 覆盖，走 interrupt 人工审批）
     auto_approve: bool = True
     # M5 interrupt/resume 的断点存储（checkpointer 只管恢复，不是状态真源——v1.4 §2.3 规则2；

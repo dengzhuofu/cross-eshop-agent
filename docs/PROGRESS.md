@@ -177,9 +177,18 @@
 - **踩坑**：商城 POST 返回的 `/product/{id}` 相对路径被前端原样渲染成外链——点击落到前端自己的域名 404；修复为服务端按请求 base_url 返回**绝对地址**（`PUBLIC_BASE_URL` 环境变量供容器部署覆盖别名）+ 前端对历史相对路径按「商城与前端同主机 :8001」约定兜底补全。另：IAB 自动化会话后期指针输入整体楔死（读正常/点击截图失效），改用「直接 goto 商品页 URL」验证外链落点
 - **验收**：backend pytest 158 绿（+1 trace 契约集成测试）+ mock-marketplace 7 测试绿（+PUBLIC_BASE_URL 覆盖）；ruff 两处干净；tsc+vite 构建通过；真机全流程（创建→过程可视→审批→自动上架→外链落点）浏览器验证
 
+## ✅ M14 公网部署：一条隧道把全栈搬上线(已完成,158 测试绿,公网真机验证)
+
+- **动机**：作品集要给面试官/招聘方直接点开看——本地演示依赖「到我机器上」，M14 让任何人拿到公网 URL 就能跑通 全链路并看到 Codex 式过程流
+- **迁移方言修复**：5 个迁移文件的 `server_default=sa.text('now()')` 写死了 PG 方言，SQLite 起库即炸（`unknown function: now()`；测试没暴露是因为 conftest 用 create_all 按方言渲染）。改为 `sa.func.now()` 后由 SQLAlchemy 按方言渲染（PG=now()/SQLite=CURRENT_TIMESTAMP），**从零建库在两种引擎都成立**——云端免 Postgres、纯 SQLite 单文件即可跑全栈
+- **同源单进程托管**：新增 `FRONTEND_DIST_PATH` 配置（config.py），非空且目录存在时 backend 直接托管 vite 构建产物：assets 静态挂载 + SPA catch-all 回退到 index.html（注册在全部 API 路由之后防吞 `/api/v1/*`，路径解析后校验仍在 dist 内防目录穿越）。公网只需暴露一个端口，前端/API 同源零 CORS
+- **商城公网化**：复用 M12 的 `PUBLIC_BASE_URL` ——隧道分配的 trycloudflare 地址注入后，发布回写的商品页链接是公网绝对地址，访客点「在商城查看」直达；demo 种子幂等 upsert 不产生重复商品
+- **一键演示栈** `backend/scripts/cloud_demo.sh`：前端构建 → 新 SQLite+种子 → 商城 :8001（可传公网 URL）→ 同源应用 :8010，一台装有 venv 的机器一条命令起全栈；配套 cloudflared quick tunnel（`--protocol http2`，本网络 QUIC 不稳会反复掉线）两条分别指向 :8010/:8001 即得两个公网 URL。API key 经环境变量注入或走确定性 stub，绝不进仓库
+- **真机验证**：cloud_demo 形态下 LLM 全链路 3 条工作流（榨汁杯=证据分不足 blocked、磁吸手机支架=completed 并真实发布、咖啡搅拌杯=发布回写公网绝对地址），公网 healthz/首页/storefront 均 200，商城第一屏即 agent 刚发布的商品
+
 ## 后续里程碑速查
 
-v1.4 全里程碑 M0-M9 ✅ + M10 反馈闭环 ✅ + M11 策略自适应检索 ✅ + M12 Mock 商城 ✅ + M13 Codex 式对话界面 ✅。可选后续：语义缓存 Phase 2（同 ResultCache 接口换 embedding 相似度 + semantic_cache_entries 迁移）、真实出图接缝、更多红队 seed。
+v1.4 全里程碑 M0-M9 ✅ + M10 反馈闭环 ✅ + M11 策略自适应检索 ✅ + M12 Mock 商城 ✅ + M13 Codex 式对话界面 ✅ + M14 公网部署 ✅。可选后续：语义缓存 Phase 2（同 ResultCache 接口换 embedding 相似度 + semantic_cache_entries 迁移）、真实出图接缝、更多红队 seed。
 
 ## 验证命令
 
@@ -194,6 +203,8 @@ python mock-marketplace/server.py --demo      # M12 mock 商城(localhost:8001,-
 .venv/Scripts/python scripts/warm_demo_cache.py   # 预热 Demo 兜底缓存(需真 key,一次性)
 bash scripts/reset_and_replay.sh              # 一键重置+种子+重放全链路(仓库根,cwd 任意)
 docker compose up --build                     # 一键起全栈(前端 :8088)
+bash backend/scripts/cloud_demo.sh [商城公网URL]   # M14 一键云端演示栈(:8010 同源+:8001 商城,纯 SQLite)
+cloudflared tunnel --url http://localhost:8010 --protocol http2   # 应用公网隧道(商城同理指 :8001)
 .venv/Scripts/python scripts/reset_demo.py && .venv/Scripts/python scripts/seed_mock_data.py
 .venv/Scripts/python -m uvicorn app.api.main:app --port 8000   # cwd=backend
 ```

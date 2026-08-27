@@ -478,3 +478,27 @@ async def list_candidate_knowledge(
     repo = WorkflowRepository()
     rows = await repo.list_knowledge_candidates(tenant_id=tenant.tenant_id, limit=limit)
     return {"items": rows}
+
+
+# ---- 云端单进程部署：后端直接托管前端构建产物 ----
+
+# FRONTEND_DIST_PATH 指向 vite 产物时启用（前端/API 同源，公网只需暴露一个端口）；
+# 本地开发留空跳过，vite :5173 独立端口不受影响。注册在所有 API 路由之后——
+# Starlette 按注册顺序匹配，catch-all 放前面会吞掉 /api/v1/*。
+_dist_env = get_settings().frontend_dist_path
+_DIST = Path(_dist_env).resolve() if _dist_env else None
+
+if _DIST is not None and _DIST.is_dir():
+    from fastapi.staticfiles import StaticFiles
+    from starlette.responses import FileResponse
+
+    if (_DIST / "assets").is_dir():
+        app.mount("/assets", StaticFiles(directory=_DIST / "assets"), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def _spa_fallback(full_path: str) -> FileResponse:
+        candidate = (_DIST / full_path).resolve()
+        # 防目录穿越：解析后必须仍在 dist 内
+        if full_path and candidate.is_file() and str(candidate).startswith(str(_DIST)):
+            return FileResponse(candidate)
+        return FileResponse(_DIST / "index.html")

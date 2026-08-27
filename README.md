@@ -64,6 +64,16 @@ docker compose up --build                   # 访问 http://localhost:8088
 
 默认无 LLM key（全链路确定性 stub，功能一致零出网）。要用真实 LLM 产出做离线演示：先在有 key 的环境跑 `python scripts/warm_demo_cache.py` 预热 Demo 兜底缓存（`ResultCache` 接口的精确 hash 实现，v1.4 §1.2 接缝；Phase 2 同接口换 embedding 相似度），再把缓存文件与 `DEMO_CACHE_MODE=read` 交给无 key 环境重放。
 
+### 公网演示（M14：一条隧道把全栈搬上线）
+
+```bash
+bash backend/scripts/cloud_demo.sh            # :8010 前端+API 同源单进程, :8001 shopverse 商城（纯 SQLite 免 PG）
+cloudflared tunnel --url http://localhost:8010 --protocol http2   # 应用公网 URL
+cloudflared tunnel --url http://localhost:8001 --protocol http2   # 商城公网 URL(把它传回 cloud_demo.sh 可让发布链接公网直达)
+```
+
+后端经 `FRONTEND_DIST_PATH` 直接托管前端构建产物（同源免 CORS、SPA 深链回退）；迁移默认值已改为 `sa.func.now()` 双方言可移植，SQLite/PostgreSQL 都能从零建库。LLM key 经环境变量注入（`SILICONFLOW_API_KEY`），不落仓库——无 key 自动降级确定性 stub，演示闭环不断。
+
 ## 前端可观测面板
 
 ```bash
@@ -164,6 +174,7 @@ python evals/rag_evals.py --gate # RAG 质量门禁：31 条黄金查询 Recall/
 | M11 | 策略自适应检索：agentic RAG 首轮前置「策略规划」——`app/rag/strategy.py` 确定性规则按问题形态选 {direct 原句直检 / rewrite 查询改写 / hyde 假设性回答}（短+精确信号直检防词面被稀释、长+问题式走 HyDE 语义泛化），LLM 单次调用同时提议策略+改写短语、枚举外提议整体弃用回退规则；HyDE 由独立生成器产出假设政策条目，经 `search_knowledge` 新参 `hyde_text` 只进语义路（repo 层 `query_embedding_alt` 对每篇取 max 余弦），BM25 词面保持用户原词；零相关沿 ESCALATION 阶梯 direct→rewrite→hyde 换策略重试 ≤2 轮（hyde 重试换角度重新生成假设文档），retrieval_trace 逐轮留痕 {round,query,strategy,hyde,hits,relevant_count}；无 LLM 全路径降级确定性、闭环不断 | ✅ |
 | M12 | Mock 商城可视化（`mock-marketplace/`，shopverse）：仿 Amazon 店面（深色导航/橙色按钮/白卡片，storefront 商品网格+搜索+平台 tab、Amazon 式三栏商品详情页、Seller Central 上架清单）跑在 localhost:8001，FastAPI+stdlib sqlite3+确定性 SVG 占位图零新依赖零外网；`publish_listing` 适配器发布成功后把上架物按 listing_id 幂等 upsert POST 进商城（`MOCK_MARKETPLACE_URL` 可配置/置空禁用，商城不可达静默降级），商品页 URL 经 PublishResult→工具输出→publish 步骤 detail.items 全链路回写（绝对地址，`PUBLIC_BASE_URL` 供容器覆盖）；前端 PublishBlock 逐平台渲染状态+「在商城查看」外链；docker-compose 新增 marketplace 服务，CI 新增 marketplace job（ruff+TestClient 全链路测试） | ✅ |
 | M13 | Codex 式对话界面（agent 过程全程可视）：`/trace` 三路留痕补齐时间戳与工具输入/输出摘要（审计表里本就存了、此前没吐），前端新组件 AgentStream 把 步骤/决策/工具调用 按发生时间**交错成统一事件流**——用户指令气泡 → 可折叠「工作过程」区（运行中自动展开+shimmer 显示当前节点，结束折叠成 `18 步骤 · 31 工具调用 · 8 决策 · 197s` 一行摘要）→ 区外「🏁 最终交付」卡（决策结论/铺货结果/复盘要点，商城外链直达商品页）；💭 决策行看推理与备选项、🔧 工具行看输入/输出审计摘要与高风险红标、节点步骤卡富语义渲染（决策门放行横幅/critic 打回与通过/坏例扫描命中/客服 RAG 全过程面板：路由 chips+策略来源+逐轮召回→相关+融合铁律冲突警示+知识库引用） | ✅ |
+| M14 | 公网部署（一条隧道把全栈搬上线）：迁移 `server_default` 改 `sa.func.now()` 双方言可移植（修复 SQLite 起库 `unknown function: now()`，云端免 PG 纯 SQLite 单文件全栈）；新增 `FRONTEND_DIST_PATH` 后端直接托管 vite 产物（assets 静态挂载+SPA catch-all 回退注册在 API 之后防吞 `/api/v1/*`+解析校验防目录穿越）——**一个端口承载前端+API 同源零 CORS**；shopverse 复用 `PUBLIC_BASE_URL` 注入隧道域名让发布回写链接公网直达；一键演示栈 `backend/scripts/cloud_demo.sh` + cloudflared quick tunnel（http2，QUIC 在该网络反复掉线）；API key 仅环境变量注入绝不进仓库 | ✅ |
 
 ## 面试讲解要点
 

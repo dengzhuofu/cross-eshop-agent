@@ -22,7 +22,7 @@ def upgrade() -> None:
     sa.Column('id', sa.String(length=64), nullable=False),
     sa.Column('name', sa.String(length=128), nullable=False),
     sa.Column('isolation_mode', sa.String(length=32), nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('name')
     )
@@ -39,8 +39,8 @@ def upgrade() -> None:
     sa.Column('input_json', sa.JSON(), nullable=True),
     sa.Column('result_json', sa.JSON(), nullable=True),
     sa.Column('error', sa.Text(), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index(op.f('ix_workflows_status'), 'workflows', ['status'], unique=False)
@@ -55,7 +55,7 @@ def upgrade() -> None:
     sa.Column('reasoning', sa.Text(), nullable=False),
     sa.Column('chosen_option', sa.String(length=64), nullable=False),
     sa.Column('alternatives', sa.JSON(), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
     sa.ForeignKeyConstraint(['workflow_id'], ['workflows.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
@@ -73,7 +73,7 @@ def upgrade() -> None:
     sa.Column('status', sa.String(length=16), nullable=False),
     sa.Column('error', sa.Text(), nullable=True),
     sa.Column('latency_ms', sa.Integer(), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
     sa.ForeignKeyConstraint(['workflow_id'], ['workflows.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
@@ -89,7 +89,7 @@ def upgrade() -> None:
     sa.Column('status', sa.String(length=32), nullable=False),
     sa.Column('detail', sa.JSON(), nullable=True),
     sa.Column('latency_ms', sa.Integer(), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
     sa.ForeignKeyConstraint(['workflow_id'], ['workflows.id'], ),
     sa.PrimaryKeyConstraint('id')
     )

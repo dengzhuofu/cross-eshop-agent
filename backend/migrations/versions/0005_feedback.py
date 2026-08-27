@@ -33,7 +33,7 @@ def upgrade() -> None:
     # pending → triaged → dismissed / applied
     sa.Column('status', sa.String(length=16), nullable=False),
     sa.Column(
-        'created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False
+        'created_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
     ),
     sa.ForeignKeyConstraint(['workflow_id'], ['workflows.id'], ),
     sa.PrimaryKeyConstraint('id')
