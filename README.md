@@ -64,13 +64,15 @@ docker compose up --build                   # 访问 http://localhost:8088
 
 默认无 LLM key（全链路确定性 stub，功能一致零出网）。要用真实 LLM 产出做离线演示：先在有 key 的环境跑 `python scripts/warm_demo_cache.py` 预热 Demo 兜底缓存（`ResultCache` 接口的精确 hash 实现，v1.4 §1.2 接缝；Phase 2 同接口换 embedding 相似度），再把缓存文件与 `DEMO_CACHE_MODE=read` 交给无 key 环境重放。
 
-### 公网演示（M14：一条隧道把全栈搬上线）
+### 公网演示（M14：named tunnel + 固定域名，长期在线）
+
+**线上实例**：控制台 [https://tofu256.ccwu.cc](https://tofu256.ccwu.cc) · 商城 [https://shop.tofu256.ccwu.cc](https://shop.tofu256.ccwu.cc)
 
 ```bash
-bash backend/scripts/cloud_demo.sh            # :8010 前端+API 同源单进程, :8001 shopverse 商城（纯 SQLite 免 PG）
-cloudflared tunnel --url http://localhost:8010 --protocol http2   # 应用公网 URL
-cloudflared tunnel --url http://localhost:8001 --protocol http2   # 商城公网 URL(把它传回 cloud_demo.sh 可让发布链接公网直达)
+bash backend/scripts/cloud_demo.sh https://shop.tofu256.ccwu.cc   # :8010 前端+API 同源, :8001 商城（纯 SQLite 免 PG）
 ```
+
+本地栈由 cloudflared Windows 服务承载（开机自启）：named tunnel `cross-eshop` 单隧道双 ingress——`tofu256.ccwu.cc → localhost:8010`、`shop.tofu256.ccwu.cc → localhost:8001`，配置在 `%USERPROFILE%\.cloudflared\config.yml`（SYSTEM 账户另需同步到 `C:\Windows\System32\config\systemprofile\.cloudflared\`）。商城公网域名经 `PUBLIC_BASE_URL` 注入发布回写链接，agent 发布的商品页在公网直接可达。
 
 后端经 `FRONTEND_DIST_PATH` 直接托管前端构建产物（同源免 CORS、SPA 深链回退）；迁移默认值已改为 `sa.func.now()` 双方言可移植，SQLite/PostgreSQL 都能从零建库。LLM key 经环境变量注入（`SILICONFLOW_API_KEY`），不落仓库——无 key 自动降级确定性 stub，演示闭环不断。
 

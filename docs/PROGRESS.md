@@ -185,6 +185,7 @@
 - **商城公网化**：复用 M12 的 `PUBLIC_BASE_URL` ——隧道分配的 trycloudflare 地址注入后，发布回写的商品页链接是公网绝对地址，访客点「在商城查看」直达；demo 种子幂等 upsert 不产生重复商品
 - **一键演示栈** `backend/scripts/cloud_demo.sh`：前端构建 → 新 SQLite+种子 → 商城 :8001（可传公网 URL）→ 同源应用 :8010，一台装有 venv 的机器一条命令起全栈；配套 cloudflared quick tunnel（`--protocol http2`，本网络 QUIC 不稳会反复掉线）两条分别指向 :8010/:8001 即得两个公网 URL。API key 经环境变量注入或走确定性 stub，绝不进仓库
 - **真机验证**：cloud_demo 形态下 LLM 全链路 3 条工作流（榨汁杯=证据分不足 blocked、磁吸手机支架=completed 并真实发布、咖啡搅拌杯=发布回写公网绝对地址），公网 healthz/首页/storefront 均 200，商城第一屏即 agent 刚发布的商品
+- **named tunnel 固定域名收官**：quick tunnel 域名随机且进程退出即失效 → 升级 Cloudflare named tunnel `cross-eshop`：cert.pem 账户授权 → 单隧道双 DNS CNAME（`tofu256.ccwu.cc`→:8010 控制台 / `shop.tofu256.ccwu.cc`→:8001 商城）→ `config.yml` 双 ingress + http2；隧道注册为 **cloudflared Windows 服务开机自启**（SYSTEM 账户需把凭据同步到 systemprofile\.cloudflared，服务卡 STOP_PENDING 时 taskkill 强杀重启）。正式域名全链路验证：「桌面加湿器香薰机」completed → amazon/shopify 双平台发布回写 `shop.tofu256.ccwu.cc/product/...` 公网绝对地址 → 商品页外站直达 200
 
 ## 后续里程碑速查
 
