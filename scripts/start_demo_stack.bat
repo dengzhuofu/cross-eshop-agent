@@ -6,6 +6,10 @@ rem 端口被占用时新实例自动退出，不影响已在运行的旧实例�
 
 set ROOT=%USERPROFILE%\WorkBuddy\cross-eshop-agent
 
+rem ---- 用户态隧道连接器（与 cloudflared 服务态构成双连接器冗余；
+rem      命名窗口 cf-tunnel 供看门狗按属主识别重启）----
+start "cf-tunnel" /min "%ProgramFiles(x86)%\cloudflared\cloudflared.exe" tunnel run cross-eshop
+
 rem ---- 先起商城 :8001（发布回写链接用正式域名）----
 set PUBLIC_BASE_URL=https://shop.tofu256.ccwu.cc
 start "shopverse-8001" /min "%ROOT%\backend\.venv\Scripts\python.exe" "%ROOT%\mock-marketplace\server.py" --demo
